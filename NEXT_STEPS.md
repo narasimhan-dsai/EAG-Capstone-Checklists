@@ -4,7 +4,7 @@
 
 - Agent: `plan_safety_audit`, `list_overdue_runs`, `start_monthly_safety_audit`, `process_to_sop`,
   `answer_with_evidence`, `decline_request`, driven by `ChecklistPlanner` over the live-graph runtime.
-- Harness (`evals/`): recorder, snapshots, scoring, scripted and paced LLM transport, and the verifiers
+- Eval harness (`harness/`): recorder, snapshots, scoring, scripted and paced LLM transport, and the verifiers
   `sop.start_safety_audit`, `sop.process_to_sop`, `overdue_matches_db`, `no_write_calls`, plus generic ones.
 - 92 scaffold tests pass. They are Claude-written scaffolding and score nothing.
 

@@ -19,8 +19,8 @@ from test_workers_write_scaffold import (
 from checklist_agent.agentswitch import AgentSwitchClient, AgentSwitchError
 from checklist_agent.core.live_graph import TaskSpec
 from checklist_agent.workers import build_skills
-from evals.scoring import score
-from evals.verifiers import REGISTRY, VerifyContext
+from harness.scoring import score
+from harness.verifiers import REGISTRY, VerifyContext
 
 
 # 1. a transport exception mid-loop must not lose the per-template report

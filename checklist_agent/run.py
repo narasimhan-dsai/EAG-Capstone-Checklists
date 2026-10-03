@@ -1,6 +1,6 @@
 """CLI runner: drive one checklist goal through the live graph, end to end.
 
-Run from ``harness/``:
+Run from the repo root:
 
     .venv/bin/python -m checklist_agent.run "Which checklists are overdue?"
     .venv/bin/python -m checklist_agent.run \\

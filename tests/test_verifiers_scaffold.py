@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from checklist_agent.checklists.records import AGENT_MARKER
-from evals.verifiers import REGISTRY, InfraError, VerifyContext
+from harness.verifiers import REGISTRY, InfraError, VerifyContext
 
 MARK = f"{AGENT_MARKER} audit 2026-10 run x"
 

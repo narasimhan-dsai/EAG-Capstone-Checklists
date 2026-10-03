@@ -1,8 +1,8 @@
 """Evaluation runner: load tasks, run the real agent, verify against AgentSwitch.
 
-    .venv/bin/python -m evals.runner                      # every task, dry-run
-    .venv/bin/python -m evals.runner --family refusal
-    .venv/bin/python -m evals.runner --task-id <id> --live   # arm a mutating task
+    .venv/bin/python -m harness.runner                      # every task, dry-run
+    .venv/bin/python -m harness.runner --family refusal
+    .venv/bin/python -m harness.runner --task-id <id> --live   # arm a mutating task
 
 Per task: preflight -> snapshot before -> run the agent with a recording
 AgentSwitch client -> snapshot after -> write the raw record to

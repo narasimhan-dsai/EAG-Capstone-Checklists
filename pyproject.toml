@@ -23,7 +23,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # Exactly one package. Nothing is nested inside a prior session's namespace.
-packages = ["checklist_agent"]
+packages = ["checklist_agent", "harness"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -37,7 +37,6 @@ install_token
 
 # Logs
 *.log
-harness/agentswitch_tools_*.json
 
 # Evaluation run records (raw, may contain tenant data)
-harness/evals/runs/
+harness/runs/
