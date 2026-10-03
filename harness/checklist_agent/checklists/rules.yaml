@@ -1,0 +1,22 @@
+# Data-driven checklist rules. Edit here, not in code.
+# Template categories (real AgentSwitch enum). Runs and SOPs do not allow "design".
+categories: [operations, safety, quality, design, maintenance, hr, compliance, other]
+sop_categories: [operations, safety, quality, maintenance, hr, compliance, other]
+frequencies: [once, daily, weekly, monthly, quarterly, yearly]
+# Frequencies that make no sense for a given category get flagged as "odd".
+odd_frequencies:
+  safety: [yearly, once]
+min_items: 1
+# The monthly safety audit covers these active templates (decision A2).
+audit:
+  category: safety
+  frequencies: [monthly, weekly, daily]
+# Overdue = due_date before today and status not terminal (the dashboard rule).
+overdue:
+  terminal_statuses: [reviewed]
+  owner_statuses: [draft, in_progress, rejected]
+  reviewer_statuses: [submitted]
+# A CAPA's follow-up verification run is due this many days after the rejected run.
+capa:
+  followup_days: 7
+  due_days: 14

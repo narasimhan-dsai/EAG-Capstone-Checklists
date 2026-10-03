@@ -1,0 +1,13 @@
+{
+  "name": "scaffold_audit_preview",
+  "note": "Scaffold only. Dry run: the audit capability is not authorised, so the agent previews and answers.",
+  "steps": [
+    {"reply": {"add": [{"id": "preview", "capability": "plan_safety_audit", "arguments": {}, "depends_on": []}],
+               "cancel": [], "finish": false, "reason": "preview the audit; changing it is not authorised"}},
+    {"reply": {"add": [{"id": "answer", "capability": "answer_with_evidence",
+                        "arguments": {"query": "Start the monthly safety audit"}, "depends_on": ["preview"]}],
+               "cancel": [], "finish": false, "reason": "preview done; say what would happen"}},
+    {"reply": {"ready": true, "missing": [], "reason": "a preview and the missing authority are enough"}},
+    {"reply": "Scripted answer: nothing was started; see plan_safety_audit for what would be created."}
+  ]
+}

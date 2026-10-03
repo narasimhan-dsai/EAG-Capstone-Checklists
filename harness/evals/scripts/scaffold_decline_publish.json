@@ -1,0 +1,12 @@
+{
+  "name": "scaffold_decline_publish",
+  "note": "Scaffold only. The planner declines a request no capability can do.",
+  "steps": [
+    {"reply": {"add": [{"id": "decline", "capability": "decline_request",
+                        "arguments": {"reason_code": "not_permitted",
+                                      "explanation": "publishing an SOP is a human reviewer's step; this seat can only submit it for review",
+                                      "alternative": "I can draft the SOP and submit it for review"},
+                        "depends_on": []}],
+               "cancel": [], "finish": false, "reason": "no capability publishes an SOP"}}
+  ]
+}

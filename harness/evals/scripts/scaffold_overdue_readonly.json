@@ -1,0 +1,13 @@
+{
+  "name": "scaffold_overdue_readonly",
+  "note": "Scaffold only, exercises the transport. Read-only: list overdue runs, then answer.",
+  "steps": [
+    {"reply": {"add": [{"id": "late", "capability": "list_overdue_runs", "arguments": {}, "depends_on": []}],
+               "cancel": [], "finish": false, "reason": "read the overdue runs"}},
+    {"reply": {"add": [{"id": "answer", "capability": "answer_with_evidence",
+                        "arguments": {"query": "Which checklists are overdue?"}, "depends_on": ["late"]}],
+               "cancel": [], "finish": false, "reason": "lookup succeeded; answer from it"}},
+    {"reply": {"ready": true, "missing": [], "reason": "the overdue report is present"}},
+    {"reply": "Scripted answer: see the list_overdue_runs evidence for the total and its split."}
+  ]
+}

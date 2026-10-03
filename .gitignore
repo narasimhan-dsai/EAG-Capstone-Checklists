@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.cover
+
+# uv / venv
+.venv/
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Runtime data — never commit installation state
+.glc/
+audit.sqlite
+pairings.sqlite
+gateway.sqlite
+install_token
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+harness/agentswitch_tools_*.json
+
+# Evaluation run records (raw, may contain tenant data)
+harness/evals/runs/

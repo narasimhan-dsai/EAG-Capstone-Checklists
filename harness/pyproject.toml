@@ -1,0 +1,60 @@
+[project]
+name = "eag-capstone-checklists"
+version = "0.1.0"
+description = "Checklist agent: capability-driven, outcome-by-outcome live-graph planning, built on the S17Code harness backbone"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "cryptography>=42",
+    "grpcio>=1.70",
+    "a2a-sdk[grpc]>=1.0,<2",
+    "faiss-cpu>=1.11,<2",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp>=1.27",
+    "networkx>=3.6,<4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+
+# No [project.scripts] entry yet: cli.py/main.py are domain-specific wiring
+# (capabilities, planner, routes) that this backbone copy deliberately excludes.
+# Add one once checklist_agent/main.py exists.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# Exactly one package. Nothing is nested inside a prior session's namespace.
+packages = ["checklist_agent"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+testpaths = ["tests", "checklist_agent/core"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = [
+    # Generated protobuf gencode is reproduced verbatim, never hand-edited.
+    "checklist_agent/core/a2a/a2a_s13_pb2.py",
+    "checklist_agent/core/a2a/a2a_s13_pb2_grpc.py",
+]
+
+[tool.ruff.lint]
+# Pinned explicitly rather than left to whatever the installed ruff defaults to,
+# so CI and a laptop check the same rules a year from now.
+select = ["E4", "E7", "E9", "F", "W", "I"]
+# A few teaching examples intentionally keep tiny state transitions on one line.
+ignore = ["E701", "E702"]
+
+[tool.ruff.lint.per-file-ignores]
+"checklist_agent/core/a2a/tests/test_hardening.py" = ["F401"]
