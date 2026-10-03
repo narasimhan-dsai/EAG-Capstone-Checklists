@@ -30,10 +30,6 @@ class RecordingClient:
         entry = self._start("mcp", name, arguments or {}, jurisdiction, is_mutating_tool(name))
         return await self._finish(entry, self._inner.call_tool(name, arguments, jurisdiction=jurisdiction))
 
-    async def rest(self, method: str, path: str, *, jurisdiction: str, json_body: dict[str, Any] | None = None) -> Any:
-        entry = self._start("rest", f"{method} {path}", json_body or {}, jurisdiction, method != "GET")
-        return await self._finish(entry, self._inner.rest(method, path, jurisdiction=jurisdiction, json_body=json_body))
-
     async def close(self) -> None:
         """No-op: the runner still needs the connection to snapshot after the run."""
 

@@ -20,7 +20,7 @@ harness/
     planner.py       capability-driven planner (validates before anything runs)
     workers.py       one guarded worker per capability
     run.py           CLI: one goal through the live graph
-    core/ economics/ events/ telemetry/ ui/   the inherited runtime backbone
+    core/live_graph/ the durable task-graph executor the planner drives
     gateway.py       the seam to the LLM gateway (it owns the provider keys)
   evals/             the evaluation harness: tasks, recorder, snapshots, verifiers
   tests/

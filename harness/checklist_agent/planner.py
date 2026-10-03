@@ -118,7 +118,6 @@ class ChecklistPlanner:
         allowed_side_effects: set[str] | None = None,
         initial_evidence: dict[str, Any] | None = None,
         unavailable: set[str] | None = None,
-        max_repeat_failures: int = 4,
     ) -> None:
         if respond_as not in {"text", "ui"}:
             raise ValueError("respond_as must be text or ui")
@@ -131,7 +130,6 @@ class ChecklistPlanner:
         # KeyError, which reads as the agent being stupid rather than the
         # manifest being a lie.
         self.unavailable = set(unavailable or ())
-        self.max_repeat_failures = max_repeat_failures
         self.initial_evidence = initial_evidence or {}
         self.last_selection: dict[str, Any] = {"mode": "checklist_agent", "calls": 0}
         self.history: list[dict[str, Any]] = []
@@ -145,14 +143,6 @@ class ChecklistPlanner:
 
         if len(graph.nodes) >= self.max_nodes:
             return GraphPatch(finish=True, reason=f"planner node limit reached ({self.max_nodes}); run stopped visibly")
-
-        stuck = self._stuck_verification(graph)
-        if stuck:
-            command, times = stuck
-            return GraphPatch(finish=True, reason=(
-                f"stopping: {command!r} has failed {times} times without converging. "
-                "Repeating an edit-and-retry loop past this point tends to damage "
-                "the work rather than fix it."))
 
         prompt = self._prompt(graph, event)
         error: str | None = None
@@ -225,26 +215,6 @@ class ChecklistPlanner:
                 raise PlannerOutputError(
                     f"decline_request is not valid after {node_id} changed data; "
                     "report what happened with answer_with_evidence")
-
-    def _stuck_verification(self, graph: GraphSnapshot) -> tuple[str, int] | None:
-        if self.max_repeat_failures <= 0:
-            return None
-        tally: dict[str, int] = {}
-        for node in graph.nodes.values():
-            if node["state"] != "succeeded":
-                continue
-            if node["skill"] not in self.registry.family("verify"):
-                continue
-            result = node.get("result") or {}
-            if result.get("exit_code") in (0, None):
-                tally.pop(str((node.get("input") or {}).get("command", "")), None)
-                continue
-            command = str((node.get("input") or {}).get("command", ""))
-            tally[command] = tally.get(command, 0) + 1
-        worst = max(tally.items(), key=lambda kv: kv[1], default=None)
-        if worst and worst[1] >= self.max_repeat_failures:
-            return worst
-        return None
 
     def _parse(self, text: str, graph: GraphSnapshot) -> GraphPatch:
         data = _json_object(text)

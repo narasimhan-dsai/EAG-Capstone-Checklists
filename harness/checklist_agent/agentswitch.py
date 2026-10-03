@@ -64,7 +64,7 @@ class _Tenant:
 
 
 class AgentSwitchClient:
-    """MCP-first client for AgentSwitch, with a narrow REST fallback.
+    """MCP client for AgentSwitch.
 
     One instance holds both tenants, mirroring ``checklist_agent/gateway.py``'s
     ``GatewayClient`` for the LLM gateway seam: workers call this instead of
@@ -199,30 +199,6 @@ class AgentSwitchClient:
             result = await self._mcp(tenant, "tools/list", {})
             tenant.tools = result.get("tools", [])
         return tenant.tools
-
-    async def rest(
-        self,
-        method: Literal["GET", "POST"],
-        path: str,
-        *,
-        jurisdiction: Jurisdiction,
-        json_body: dict[str, Any] | None = None,
-    ) -> Any:
-        """The REST fallback -- confirmed necessary for exactly four action
-        groups (Form16/Form24Q generation, vault, reports, locale). Anything
-        MCP can reach belongs in :meth:`call_tool`, not here.
-        """
-        tenant = self._tenant(jurisdiction)
-        token = await self._token(tenant)
-        url = f"{tenant.base_url}{path if path.startswith('/') else '/' + path}"
-        response = await self._client.request(
-            method, url, json=json_body, headers={"Authorization": f"Bearer {token}"}
-        )
-        if response.status_code >= 400:
-            raise AgentSwitchError(
-                f"AgentSwitch REST {method} {path} failed: {response.status_code} {response.text[:300]}"
-            )
-        return response.json()
 
     async def close(self) -> None:
         if self._owns_client:

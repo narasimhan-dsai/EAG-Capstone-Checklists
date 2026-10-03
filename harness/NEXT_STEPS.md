@@ -62,8 +62,3 @@
 - A draft SOP has `published_at` set (SOP-2026-00100 is `draft`, inactive, `published_at: 2026-07-27`).
 - Boolean fields such as `is_active` and `passed` come back as `1` and `0` although the tool schemas
   declare them boolean.
-
-## Known issue
-
-`checklist_agent/ui/compose.py` imports `checklist_agent.workers.context`, which does not exist. It fails
-if imported.
