@@ -32,7 +32,7 @@ from .transport import PacedLLM, ScriptedLLM
 from .verifiers import REGISTRY, InfraError, VerifyContext
 
 EVALS = Path(__file__).resolve().parent
-FAMILIES = {"audit", "overdue", "sop", "refusal"}
+FAMILIES = {"audit", "overdue", "report", "sop", "refusal"}
 REQUIRED = ("id", "family", "goal", "jurisdiction", "authored_by", "transport", "verifiers")
 
 

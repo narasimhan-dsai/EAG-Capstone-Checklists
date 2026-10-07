@@ -208,3 +208,11 @@ async def test_bad_llm_output_writes_nothing():
         result = await sop(platform, llm_returning(bad))
         assert result["error"] is True and result["code"] == "invalid_draft"
         assert not [n for n, _ in platform.calls if n == "SOPDocument.create"]
+
+
+async def test_a_sop_draft_with_a_figure_the_description_never_gave_writes_nothing():
+    invented = {**GOOD_DRAFT, "sections": [{"title": "Steps", "body": "1. Wait 45 minutes. 2. Lock."}]}
+    platform = FakePlatform()
+    result = await sop(platform, llm_returning(invented))
+    assert result["error"] is True and result["code"] == "invalid_draft" and "45" in result["message"]
+    assert not [n for n, _ in platform.calls if n == "SOPDocument.create"]

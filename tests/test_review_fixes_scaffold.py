@@ -173,3 +173,13 @@ async def test_answer_numbers_computed_by_a_worker_are_grounded():
 
 async def test_a_number_is_not_grounded_by_a_longer_number_containing_it():
     assert (await grounded("17 runs are overdue", {"total": 117}))["ok"] is False
+
+
+def test_a_gateway_failure_inside_a_worker_scores_infra_error_not_fail():
+    record = {"result": {"nodes": {}, "patch_events": [
+        {"kind": "task_failed", "reason": None,
+         "payload": {"error": "RuntimeError: gateway /v1/chat returned 503: all providers unavailable"}}]}}
+    assert score(record, [{"claim": "c", "ok": False, "observed": {}}])["state"] == "infra_error"
+    other = {"result": {"nodes": {}, "patch_events": [
+        {"kind": "task_failed", "reason": None, "payload": {"error": "ValueError: bad plan"}}]}}
+    assert score(other, [{"claim": "c", "ok": False, "observed": {}}])["state"] == "fail"

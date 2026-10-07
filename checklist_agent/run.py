@@ -36,6 +36,17 @@ from .planner import ChecklistPlanner  # noqa: E402
 from .workers import RunContext, build_skills  # noqa: E402
 
 
+def _failure(patch_events: list[dict]) -> str:
+    """Why a run ended with no answer, so the caller never gets silence. A worker's own error (a gateway
+    failure while writing the answer, say) is the cause; the planner's "terminal capability failed" is not."""
+    for event in reversed(patch_events):
+        error = (event.get("payload") or {}).get("error") if event.get("kind") == "task_failed" else None
+        if error:
+            return str(error)
+    reasons = [e["reason"] for e in patch_events if e.get("reason")]
+    return reasons[-1] if reasons else "the run ended without producing an answer"
+
+
 async def run_goal(
     goal: str,
     *,
@@ -83,6 +94,8 @@ async def run_goal(
         "run_id": run_id, "data_dir": str(data_dir), "finished": report.finished,
         "executed": report.executed, "waiting": report.waiting, "patch_events": patch_events,
         "answer": outcome.get("text") if answer_node else None,
+        "verification": outcome.get("verification") if answer_node else None,
+        "failure": None if answer_node else _failure(patch_events),
         "declined": bool(outcome.get("declined")),
         "decline": outcome if outcome.get("declined") else None,
         "nodes": {node_id: {"skill": n["skill"], "state": n["state"], "input": n["input"],

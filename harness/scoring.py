@@ -32,6 +32,8 @@ def infra_reason(record: dict[str, Any]) -> str | None:
         if isinstance(outcome, dict) and outcome.get("code") in _INFRA_CODES:
             return f"{node.get('skill')} could not read AgentSwitch: {str(outcome.get('message'))[:200]}"
     for event in (record.get("result") or {}).get("patch_events", []):
+        if event.get("kind") == "task_failed" and _INFRA.search(str((event.get("payload") or {}).get("error"))):
+            return f"a worker failed on infrastructure: {str(event['payload']['error'])[:200]}"
         reason = event.get("reason") or ""
         if "planner call failed visibly" in reason and _INFRA.search(reason):
             return reason[:240]
