@@ -30,6 +30,11 @@ def audit_template(template: Template, rules: Rules | None = None) -> list[Findi
         flag("missing_assignee", "active template has no assignee")
     if len(template.items) < rules.min_items:
         flag("no_items", "template has no checklist items")
+    names = {item.text for item in template.items}
+    for item in template.items:
+        if item.branch_rule and item.branch_rule not in names:
+            flag("unresolved_branch_rule", f"item {item.text!r} has a branch rule that names no item of "
+                 f"this template ({item.branch_rule!r}); the platform refuses to create runs from it")
     return found
 
 

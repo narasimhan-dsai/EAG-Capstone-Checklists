@@ -183,6 +183,48 @@ def default_registry() -> CapabilityRegistry:
             {}, families=("evidence",),
         ),
         Capability(
+            "find_schedule_gaps",
+            "Find recurring checklists whose schedule has slipped. For every active template that is daily, "
+            "weekly, monthly, quarterly or yearly, checks whether a run is due in the current period and in "
+            "the previous one. A 'current' gap means the run is not created yet; a 'previous' gap means a "
+            "period was missed. Returns the total, a split by frequency and period, and the earliest gaps. "
+            "Read-only.",
+            {}, families=("evidence",),
+        ),
+        Capability(
+            "list_blocked_runs",
+            "List open runs that still have blocker items pending, which the platform will not let finish. "
+            "Returns the total, a split by status and the runs with the most blockers. Read-only.",
+            {}, families=("evidence",),
+        ),
+        Capability(
+            "list_review_queue",
+            "List runs that were handed over and are waiting on a reviewer. Returns the total, a split by "
+            "reviewer and the longest-waiting runs (waiting is counted from the run's last update). Read-only.",
+            {}, families=("evidence",),
+        ),
+        Capability(
+            "summarize_completion",
+            "Summarise checklist completion across all runs the way the dashboard does: items completed "
+            "over items total, with the number of reviewed and open runs and a split by category. Read-only.",
+            {}, families=("evidence",),
+        ),
+        Capability(
+            "audit_templates",
+            "Audit every template for configuration problems: missing or unknown category, an odd "
+            "frequency, an active template with no assignee, no items, or a branch rule that names no item "
+            "(the platform refuses to create runs from such a template). Returns counts by problem and the "
+            "first findings with template names. Read-only; it fixes nothing.",
+            {}, families=("evidence",),
+        ),
+        Capability(
+            "list_sops_due_review",
+            "List published SOPs that are overdue for periodic review, using the review frequency set in the "
+            "checklist preferences (180 days when it cannot be read). Returns the total, the frequency and "
+            "where it came from, and the oldest SOPs. Read-only.",
+            {}, families=("evidence",),
+        ),
+        Capability(
             "list_overdue_runs",
             "List overdue checklist runs. Overdue means the due date is before today and the run is not "
             "reviewed. Returns the total, a split by status, who is blocking (the owner for draft or "

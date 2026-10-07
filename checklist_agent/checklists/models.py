@@ -19,6 +19,7 @@ class Item:
     id: str
     text: str
     blocker: bool = False
+    branch_rule: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,14 @@ class Run:
     reviewer: str | None = None
     agent_created: bool = False
     name: str = ""
+    category: str | None = None
+    blockers_pending: int = 0
+    required_pending: int = 0
+    completed_items: float = 0.0
+    total_items: float = 0.0
+    owner_name: str | None = None
+    reviewer_name: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,3 +82,14 @@ class Capa:
     root_cause: str | None = None
     repeat: bool = False
     status: str = "open"
+
+
+@dataclass(frozen=True)
+class Sop:
+    id: str
+    name: str
+    status: str
+    category: str | None = None
+    number: str | None = None
+    published_at: date | None = None
+    updated_at: date | None = None

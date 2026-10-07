@@ -367,3 +367,57 @@ async def overdue_matches_db(ctx: VerifyContext, params: dict[str, Any]) -> dict
     ok = isinstance(reported, int) and abs(reported - expected) <= int(params.get("tolerance", 0))
     return _result(params.get("claim") or "the overdue total matches the database",
                    ok, {"reported": reported, "expected": expected})
+
+
+def _node_result(ctx: VerifyContext, skill: str) -> dict[str, Any] | None:
+    nodes = (ctx.record.get("result") or {}).get("nodes", {})
+    done = [n for n in nodes.values() if n.get("skill") == skill and n.get("state") == "succeeded"]
+    return (done[-1].get("result") or {}) if done else None
+
+
+@verifier("db_recompute")
+async def db_recompute(ctx: VerifyContext, params: dict[str, Any]) -> dict[str, Any]:
+    """A read-only capability's numbers equal a fresh recompute from the database.
+
+    params: ``measure`` is one of ``completion`` (summarize_completion: items completed and total),
+    ``blocked_runs`` (list_blocked_runs: open runs with a blocker item pending), ``review_queue``
+    (list_review_queue: submitted runs) or ``sops_due_review`` (list_sops_due_review: published SOPs
+    older than ``review_days``, default 180, as of ``today``). ``tolerance`` (default 0) allows for other
+    teams editing rows while the agent works. Watches required: ChecklistRun.list with the fields the
+    measure reads (status, blocker_items_pending, completed_items, total_items), or SOPDocument.list
+    (status, published_at, updated_at).
+    """
+    measure, tolerance = params.get("measure"), int(params.get("tolerance", 0))
+    terminal = load_rules().terminal_statuses
+    if measure == "completion":
+        rows = _watched(ctx.after, "ChecklistRun.list")
+        expected = {"items_completed": int(sum(float(r.get("completed_items") or 0) for r in rows.values())),
+                    "items_total": int(sum(float(r.get("total_items") or 0) for r in rows.values()))}
+        skill = "summarize_completion"
+    elif measure == "blocked_runs":
+        rows = _watched(ctx.after, "ChecklistRun.list")
+        expected = {"total": sum(1 for r in rows.values() if r.get("status") not in terminal
+                                 and int(r.get("blocker_items_pending") or 0) > 0)}
+        skill = "list_blocked_runs"
+    elif measure == "review_queue":
+        rows = _watched(ctx.after, "ChecklistRun.list")
+        expected = {"total": sum(1 for r in rows.values() if r.get("status") in load_rules().reviewer_statuses)}
+        skill = "list_review_queue"
+    elif measure == "sops_due_review":
+        rows = _watched(ctx.after, "SOPDocument.list")
+        today, days = _today(params), int(params.get("review_days", 180))
+        due = 0
+        for r in rows.values():
+            stamp = str(r.get("published_at") or r.get("updated_at") or "")[:10]
+            if r.get("status") == "published" and stamp and (today - date.fromisoformat(stamp)).days > days:
+                due += 1
+        expected, skill = {"total": due}, "list_sops_due_review"
+    else:
+        raise InfraError(f"unknown measure {measure!r}; use completion, blocked_runs, review_queue or sops_due_review")
+    result = _node_result(ctx, skill)
+    if result is None:
+        return _result(f"the agent ran {skill}", False, {"succeeded_nodes": 0})
+    observed = {key: result.get(key) for key in expected}
+    ok = all(isinstance(observed[k], int) and abs(observed[k] - want) <= tolerance for k, want in expected.items())
+    return _result(params.get("claim") or f"{skill} matches the database", ok,
+                   {"reported": observed, "expected": expected})

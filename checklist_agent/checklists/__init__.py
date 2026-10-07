@@ -13,6 +13,7 @@ from checklist_agent.checklists.models import (
     ItemResult,
     Run,
     RunStatus,
+    Sop,
     Template,
 )
 from checklist_agent.checklists.rules import Rules, load_rules
@@ -28,5 +29,5 @@ from checklist_agent.checklists.scope import (
 __all__ = [
     "AuditPlan", "OverdueReport", "audit_scope", "month_end", "overdue", "plan_audit",
     "Capa", "CapaPlan", "Finding", "Item", "ItemResult", "Rules", "Run", "RunStatus",
-    "Template", "audit_template", "audit_templates", "load_rules", "plan_capa_for_rejection",
+    "Sop", "Template", "audit_template", "audit_templates", "load_rules", "plan_capa_for_rejection",
 ]

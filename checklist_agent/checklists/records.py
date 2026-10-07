@@ -5,7 +5,7 @@ import hashlib
 from datetime import date
 from typing import Any
 
-from checklist_agent.checklists.models import Item, Run, RunStatus, Template
+from checklist_agent.checklists.models import Item, Run, RunStatus, Sop, Template
 
 # Written into `notes` on runs and `content` on SOPs the agent creates, so a
 # later read can tell its rows from everybody else's.
@@ -22,7 +22,8 @@ def _day(value: Any) -> date | None:
 
 
 def template_from_row(row: dict[str, Any]) -> Template:
-    items = tuple(Item(id=str(index), text=str(item.get("name") or ""), blocker=bool(item.get("is_blocker")))
+    items = tuple(Item(id=str(index), text=str(item.get("name") or ""), blocker=bool(item.get("is_blocker")),
+                       branch_rule=str(item.get("branch_rule") or ""))
                   for index, item in enumerate(row.get("items") or []))
     return Template(
         id=row["id"], name=row.get("name") or "", category=row.get("category") or None,
@@ -42,7 +43,21 @@ def run_from_row(row: dict[str, Any]) -> Run:
         owner=row.get("assigned_to_id") or None, due_date=_day(row.get("due_date")),
         reviewer=row.get("reviewer_id") or None, name=row.get("name") or "",
         agent_created=AGENT_MARKER in str(row.get("notes") or ""),
+        category=row.get("category") or None,
+        blockers_pending=int(row.get("blocker_items_pending") or 0),
+        required_pending=int(row.get("required_items_pending") or 0),
+        completed_items=float(row.get("completed_items") or 0),
+        total_items=float(row.get("total_items") or 0),
+        owner_name=row.get("_assigned_to_id_display") or None,
+        reviewer_name=row.get("_reviewer_id_display") or None,
+        updated_at=row.get("updated_at") or None,
     )
+
+
+def sop_from_row(row: dict[str, Any]) -> Sop:
+    return Sop(id=row["id"], name=row.get("name") or "", status=str(row.get("status") or ""),
+               category=row.get("category") or None, number=row.get("number") or None,
+               published_at=_day(row.get("published_at")), updated_at=_day(row.get("updated_at")))
 
 
 def description_key(description: str) -> str:
