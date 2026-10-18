@@ -1,0 +1,5 @@
+install = "pip install -r requirements.txt"
+run = "python -m harness.runner --official"
+results = "results.json"
+instances = ["suryodaya"]
+timeout_minutes = 20

@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Awaitable, Callable
 
 from checklist_agent.checklists import load_rules
 from checklist_agent.checklists.records import AGENT_MARKER, template_from_row
+from checklist_agent.checklists.schedule import period_bounds
 from checklist_agent.checklists.scope import audit_scope
 
 
@@ -260,6 +262,44 @@ def _ours(row: dict[str, Any], field: str) -> bool:
     return AGENT_MARKER in str(row.get(field) or "")
 
 
+async def _unrunnable_ids(ctx: VerifyContext, template_ids: Any) -> set[str]:
+    """Templates the platform's own branch-rule reader calls malformed: it refuses to create runs from them.
+    Without a platform client nothing can be excluded."""
+    if ctx.client is None:
+        return set()
+    bad: set[str] = set()
+    for template_id in template_ids:
+        try:
+            result = await ctx.client.call_tool("endpoint.checklists.branch_rules",
+                                                {"op": "read", "template_id": template_id},
+                                                jurisdiction=ctx.jurisdiction)
+        except Exception as problem:
+            raise InfraError(f"could not check the branch rules of {template_id}: {problem}") from problem
+        if any(item.get("problems") for item in (result.get("result") or {}).get("items") or []):
+            bad.add(template_id)
+    return bad
+
+
+async def _all_rows(ctx: VerifyContext, tool: str) -> list[dict[str, Any]]:
+    if ctx.client is None:
+        raise InfraError(f"this verifier reads {tool} and needs the platform client")
+    rows: list[dict[str, Any]] = []
+    while True:
+        try:
+            page = await ctx.client.call_tool(tool, {"limit": 200, "offset": len(rows)}, jurisdiction=ctx.jurisdiction)
+        except Exception as problem:
+            raise InfraError(f"could not read {tool}: {problem}") from problem
+        data = page.get("data") or []
+        rows.extend(data)
+        if not data or len(rows) >= (page.get("total") or 0):
+            return rows
+
+
+def _same_but_updated_at(before: dict[str, Any], after: dict[str, Any] | None) -> bool:
+    return after is not None and {k: v for k, v in before.items() if k != "updated_at"} == {
+        k: v for k, v in after.items() if k != "updated_at"}
+
+
 @verifier("sop.start_safety_audit")
 async def start_safety_audit(ctx: VerifyContext, params: dict[str, Any]) -> dict[str, Any]:
     """Every in-scope safety template has either a pre-existing run this month that is unchanged, or
@@ -282,6 +322,7 @@ async def start_safety_audit(ctx: VerifyContext, params: dict[str, Any]) -> dict
 
     new_ids = [i for i in runs_after if i not in runs_before]
     problems: list[str] = []
+    unrunnable = await _unrunnable_ids(ctx, [t.id for t in scope])
 
     def unchanged(before_row: dict[str, Any], after_row: dict[str, Any] | None) -> bool:
         # updated_at moves whenever anyone touches a row; it is not a change the agent is judged on.
@@ -292,6 +333,10 @@ async def start_safety_audit(ctx: VerifyContext, params: dict[str, Any]) -> dict
         return _ours(row, "notes") and row.get("status") == "draft"
 
     for template in scope:
+        if template.id in unrunnable:
+            problems += [f"{template.name}: a run was created although the platform cannot run this template"
+                         for i in new_ids if runs_after[i]["template_id"] == template.id and _ours(runs_after[i], "notes")]
+            continue
         existing = [i for i, r in runs_before.items() if r["template_id"] == template.id and this_month(r)]
         if existing:
             for i in existing:
@@ -316,8 +361,9 @@ async def start_safety_audit(ctx: VerifyContext, params: dict[str, Any]) -> dict
     in_scope = {t.id for t in scope}
     problems += [f"run {i} was created on out-of-scope template {runs_after[i]['template_id']}"
                  for i in new_ids if _ours(runs_after[i], "notes") and runs_after[i]["template_id"] not in in_scope]
+    names = sorted(t.name for t in scope if t.id in unrunnable)
     return _result(params.get("claim") or "the monthly safety audit started exactly the in-scope runs and "
-                   "touched nothing else", not problems, problems)
+                   "touched nothing else", not problems, problems or {"excluded_as_unrunnable": names})
 
 
 @verifier("sop.process_to_sop")
@@ -421,3 +467,92 @@ async def db_recompute(ctx: VerifyContext, params: dict[str, Any]) -> dict[str, 
     ok = all(isinstance(observed[k], int) and abs(observed[k] - want) <= tolerance for k, want in expected.items())
     return _result(params.get("claim") or f"{skill} matches the database", ok,
                    {"reported": observed, "expected": expected})
+
+
+@verifier("recurring_runs_created")
+async def recurring_runs_created(ctx: VerifyContext, params: dict[str, Any]) -> dict[str, Any]:
+    """Every new recurring run is a draft on an active recurring template, due at the end of the current period,
+    where the period had no run before, on a template the platform can run; no template got two; no existing run
+    changed; and the number created is within ``min`` (default 1) and ``max`` (default 25).
+
+    Watches required: ChecklistTemplate.list (name, category, frequency, is_active, default_assignee_id) and
+    ChecklistRun.list (template_id, status, due_date, name, notes, updated_at). params: ``today``.
+    """
+    today = _today(params)
+    runs_before, runs_after = _watched(ctx.before, "ChecklistRun.list"), _watched(ctx.after, "ChecklistRun.list")
+    templates = _watched(ctx.after, "ChecklistTemplate.list")
+    new = {i: r for i, r in runs_after.items() if i not in runs_before
+           and f"{AGENT_MARKER} recurring" in str(r.get("notes") or "")}
+    per_template = Counter(r["template_id"] for r in new.values())
+    problems: list[str] = []
+    for run_id, run in new.items():
+        template_id = run["template_id"]
+        template = templates.get(template_id)
+        bounds = period_bounds(template.get("frequency") if template else None, today)
+        if template is None or not template.get("is_active") or bounds is None:
+            problems.append(f"run {run_id}: its template is missing, inactive or not recurring")
+            continue
+        if str(run.get("due_date"))[:10] != bounds[1].isoformat():
+            problems.append(f"run {run_id}: due {run.get('due_date')}, not the period end {bounds[1].isoformat()}")
+        if run.get("status") != "draft":
+            problems.append(f"run {run_id}: is {run.get('status')!r}; recurring runs are created, not started")
+        if any(b["template_id"] == template_id and bounds[0].isoformat() <= str(b.get("due_date") or "")[:10]
+               <= bounds[1].isoformat() for b in runs_before.values()):
+            problems.append(f"run {run_id}: its period already had a run")
+    problems += [f"template {t}: {n} runs were created for one period" for t, n in per_template.items() if n > 1]
+    problems += [f"template {t}: a run was created although the platform cannot run it"
+                 for t in sorted(await _unrunnable_ids(ctx, per_template))]
+    problems += [f"existing run {i} was modified" for i, before in runs_before.items()
+                 if not _same_but_updated_at(before, runs_after.get(i))]
+    low, high = int(params.get("min", 1)), int(params.get("max", 25))
+    if not low <= len(new) <= high:
+        problems.append(f"{len(new)} recurring runs were created; expected {low} to {high}")
+    return _result(params.get("claim") or "the recurring runs are the right ones and nothing else changed",
+                   not problems, problems or {"created": len(new)})
+
+
+@verifier("followups_raised")
+async def followups_raised(ctx: VerifyContext, params: dict[str, Any]) -> dict[str, Any]:
+    """The agent's follow-ups exist once each: at least ``min_todos`` (default 1) open todos titled ``[seat23]``,
+    one per owner, and (unless ``escalations`` is false) at least one open escalation, one per issue and one per
+    session. Reads the todos and escalations through the platform client."""
+    open_states = (None, "open", "in_progress", "acknowledged")
+    todos = [t for t in await _all_rows(ctx, "AgentTodo.list")
+             if str(t.get("title", "")).startswith("[seat23]") and t.get("status") in open_states]
+    problems: list[str] = []
+    if len(todos) < int(params.get("min_todos", 1)):
+        problems.append(f"{len(todos)} follow-up todos exist; expected at least {params.get('min_todos', 1)}")
+    owners = Counter(str(t["title"]).split(":")[0] for t in todos)
+    problems += [f"{owner} has {n} open todos" for owner, n in owners.items() if n > 1]
+    count = len(todos)
+    if params.get("escalations", True):
+        found = [e for e in await _all_rows(ctx, "AgentEscalation.list")
+                 if "[seat23]" in str(e.get("reason")) and e.get("status") in open_states]
+        if not found:
+            problems.append("no follow-up escalation exists")
+        issues = Counter(str(e["reason"]).split(":")[0] for e in found)
+        problems += [f"{issue!r} was escalated {n} times" for issue, n in issues.items() if n > 1]
+        sessions = Counter(e.get("session_id") for e in found)
+        problems += [f"session {s} carries {n} escalations; the platform allows one" for s, n in sessions.items() if n > 1]
+        count += len(found)
+    return _result(params.get("claim") or "each follow-up was raised exactly once", not problems,
+                   problems or {"open_follow_ups": count})
+
+
+@verifier("template_drafted_inactive")
+async def template_drafted_inactive(ctx: VerifyContext, params: dict[str, Any]) -> dict[str, Any]:
+    """At least ``min`` (default 1) new templates drafted from an SOP, each inactive, linked to its SOP and with
+    items. Watch required: ChecklistTemplate.list (name, is_active, description, items)."""
+    before, after = _watched(ctx.before, "ChecklistTemplate.list"), _watched(ctx.after, "ChecklistTemplate.list")
+    new = {i: r for i, r in after.items() if i not in before
+           and f"{AGENT_MARKER} sop=" in str(r.get("description") or "")}
+    problems: list[str] = []
+    if len(new) < int(params.get("min", 1)):
+        problems.append(f"{len(new)} new SOP-drafted templates; expected at least {params.get('min', 1)}")
+    for template_id, row in new.items():
+        if row.get("is_active"):
+            problems.append(f"template {template_id} is active; a draft must stay inactive until a person reviews it")
+        if not row.get("items"):
+            problems.append(f"template {template_id} has no items")
+    return _result(params.get("claim") or "a template was drafted from the SOP and left inactive",
+                   not problems, problems or {"drafted": len(new)})

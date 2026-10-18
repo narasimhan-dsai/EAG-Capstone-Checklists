@@ -31,7 +31,7 @@ load_dotenv(ROOT / ".env")
 from .agentswitch import AgentSwitchClient  # noqa: E402
 from .capabilities import default_registry  # noqa: E402
 from .core.live_graph import GraphStore, LiveGraphExecutor  # noqa: E402
-from .gateway import GatewayClient  # noqa: E402
+from .llm import make_llm  # noqa: E402
 from .planner import ChecklistPlanner  # noqa: E402
 from .workers import RunContext, build_skills  # noqa: E402
 
@@ -62,7 +62,7 @@ async def run_goal(
     replaces today's date. All default to the real ones."""
     data_dir = data_dir or Path(tempfile.mkdtemp(prefix="checklist-run-"))
     store = GraphStore(data_dir / "graphs")
-    gateway = llm or GatewayClient()
+    gateway = llm or make_llm()
     agentswitch = agentswitch or AgentSwitchClient()
     run_id = str(uuid.uuid4())
 

@@ -40,3 +40,6 @@ install_token
 
 # Evaluation run records (raw, may contain tenant data)
 harness/runs/
+
+# The official run writes this next to the repo; the platform reads it, git should not keep it
+results.json

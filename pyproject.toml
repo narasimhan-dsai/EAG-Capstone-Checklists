@@ -8,6 +8,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "networkx>=3.6,<4",
+    "openai>=1.40,<2",
 ]
 
 [dependency-groups]

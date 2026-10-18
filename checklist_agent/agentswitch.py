@@ -83,6 +83,11 @@ class AgentSwitchClient:
             password = os.getenv(f"AGENTSWITCH_{jurisdiction}_PASSWORD", "")
             if base_url and _looks_configured(email) and _looks_configured(password):
                 self._tenants[jurisdiction] = _Tenant(base_url, email, password)
+        # The harness runner provides a seat token and the instance to call: no password, no login.
+        token, runner_base = os.getenv("AGENTSWITCH_TOKEN", "").strip(), os.getenv("AGENTSWITCH_BASE_URL", "").rstrip("/")
+        if token and runner_base:
+            slot: Jurisdiction = "US" if os.getenv("AGENTSWITCH_INSTANCE") == "keystone" else "IN"
+            self._tenants[slot] = _Tenant(runner_base, "", "", token=token)
 
     def configured(self, jurisdiction: Jurisdiction) -> bool:
         return jurisdiction in self._tenants
@@ -97,6 +102,8 @@ class AgentSwitchClient:
             ) from None
 
     async def _login(self, tenant: _Tenant) -> str:
+        if not tenant.password:
+            raise AgentSwitchError("the seat token was refused and there is no password to log in again with")
         response = await self._client.post(
             f"{tenant.base_url}/api/auth/login",
             json={"email": tenant.email, "password": tenant.password},

@@ -22,10 +22,10 @@ from pathlib import Path
 from typing import Any
 
 from checklist_agent.agentswitch import AgentSwitchClient
-from checklist_agent.gateway import GatewayClient
+from checklist_agent.llm import make_llm
 from checklist_agent.run import run_goal
 
-from . import snapshot
+from . import official, snapshot
 from .recorder import RecordingClient
 from .scoring import INFRA, exit_code, score
 from .transport import PacedLLM, ScriptedLLM
@@ -116,7 +116,7 @@ async def _preflight(task: dict[str, Any], llm: Any, agentswitch: AgentSwitchCli
 def _make_llm(task: dict[str, Any], args: argparse.Namespace) -> Any:
     if task["transport"] == "scripted":
         return ScriptedLLM.from_file(EVALS / task["script"])
-    return PacedLLM(GatewayClient(), min_interval=args.min_interval)
+    return PacedLLM(make_llm(), min_interval=args.min_interval)
 
 
 async def run_task(task: dict[str, Any], args: argparse.Namespace, run_dir: Path) -> dict[str, Any]:
@@ -126,7 +126,8 @@ async def run_task(task: dict[str, Any], args: argparse.Namespace, run_dir: Path
     mode = "live" if (allow and armed) else "dry_run"
     record: dict[str, Any] = {
         "task": task, "mode": mode, "allow_effective": effective_allow,
-        "transport": task["transport"], "model": os.getenv("CHECKLIST_GATEWAY_MODEL"),
+        "transport": task["transport"],
+        "model": os.getenv("OPENAI_MODEL") or os.getenv("CHECKLIST_GATEWAY_MODEL"),
         "started": datetime.now(timezone.utc).isoformat(), "exception": None,
         "preflight_error": None, "result": None, "tool_calls": [], "snapshots": {},
     }
@@ -165,7 +166,14 @@ async def run_task(task: dict[str, Any], args: argparse.Namespace, run_dir: Path
         await inner.close()
     _write(run_dir / f"{task['id']}.score.json", {"task_id": task["id"], "authored_by": task["authored_by"],
                                                    "verifier_results": results, **outcome})
-    return {"id": task["id"], "family": task["family"], "authored_by": task["authored_by"], "mode": mode, **outcome}
+    ok, total = _claims(results)
+    return {"id": task["id"], "family": task["family"], "authored_by": task["authored_by"], "mode": mode,
+            "claims_passed": ok, "claims_total": total, **outcome}
+
+
+def _claims(results: list[dict[str, Any]]) -> tuple[int, int]:
+    """How many verifier claims held, out of how many were checked."""
+    return sum(1 for r in results if r.get("ok")), len(results)
 
 
 async def _verify(task: dict[str, Any], record: dict[str, Any], client: Any) -> list[dict[str, Any]]:
@@ -233,9 +241,37 @@ async def main_async(args: argparse.Namespace) -> int:
     return exit_code([r["state"] for r in rows])
 
 
-def main() -> None:
+async def main_official(args: argparse.Namespace) -> int:
+    """What the platform's runner executes. It always ends with a valid results file and exit code 0."""
+    instance = os.getenv("AGENTSWITCH_INSTANCE", "suryodaya")
+    armed = not args.dry
+    print(f"official run on {instance}: {'ARMED, tasks that change data will write to ' + os.getenv('AGENTSWITCH_BASE_URL', '?') if armed else 'dry, nothing is written'}",
+          flush=True)
+    runner_args = argparse.Namespace(live=armed, min_interval=0.0, force_rerun=False)
+    try:
+        tasks = load_tasks(str(EVALS / "tasks" / "official.jsonl"))
+        payload = await official.run_official(
+            tasks, instance=instance, armed=armed, budget_seconds=args.budget_minutes * 60, out_path=args.out,
+            runner_args=runner_args, run_task=run_task)
+    except Exception as problem:  # never leave the platform without a results file
+        payload = official.build_results(instance, [{
+            "id": f"{instance}:harness", "title": "The harness started", "passed": False, "score": 0.0,
+            "evidence": f"crashed: {type(problem).__name__}: {problem}"[:500]}])
+        Path(args.out).write_text(json.dumps(payload, indent=2))
+    for task in payload["tasks"]:
+        print(f"[{'PASS' if task['passed'] else 'FAIL'}] {task['id']}: {task['evidence'][:160]}", flush=True)
+    print(payload["summary"], flush=True)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the checklist agent evaluation harness.")
-    parser.add_argument("--tasks", default=str(EVALS / "tasks" / "*.jsonl"), help="glob of task files")
+    parser.add_argument("--official", action="store_true",
+                        help="run the official suite and write results.json (what the platform's runner does)")
+    parser.add_argument("--dry", action="store_true", help="with --official: skip tasks that change data")
+    parser.add_argument("--out", default="results.json", help="with --official: the results file")
+    parser.add_argument("--budget-minutes", type=float, default=16.0, help="with --official: stop starting tasks after this")
+    parser.add_argument("--tasks", default=str(EVALS / "tasks" / "scaffold.jsonl"), help="glob of task files")
     parser.add_argument("--family", choices=sorted(FAMILIES))
     parser.add_argument("--task-id")
     parser.add_argument("--live", action="store_true",
@@ -244,7 +280,12 @@ def main() -> None:
     parser.add_argument("--min-interval", type=float, default=2.0, help="min seconds between live LLM calls")
     parser.add_argument("--cooldown", type=float, default=0.0, help="seconds to wait between tasks")
     parser.add_argument("--runs-dir", default=str(EVALS / "runs"))
-    raise SystemExit(asyncio.run(main_async(parser.parse_args())))
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    raise SystemExit(asyncio.run(main_official(args) if args.official else main_async(args)))
 
 
 if __name__ == "__main__":
