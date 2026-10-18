@@ -18,6 +18,7 @@ checklist_agent/     the agent
   capabilities.py    the capability manifest the planner sees
   planner.py         capability-driven planner (validates before anything runs)
   workers.py         one guarded worker per capability
+  action_workers.py  the actions that change data beyond the audit (follow-ups, drafts, CAPA, submit)
   verify.py          checks every model answer against the data it was given
   run.py             CLI: one goal through the live graph
   core/live_graph/   the durable task-graph executor the planner drives
@@ -59,6 +60,13 @@ visible to every team. Without `--allow`, the agent can only read and preview:
 | How complete are our checklists | `summarize_completion` | `ChecklistRun.list` | no | `db_recompute` |
 | Which templates are misconfigured | `audit_templates` | `ChecklistTemplate.list` | no | |
 | Which SOPs are due for review | `list_sops_due_review` | `SOPDocument.list`, `ChecklistPreferences.list` | no | `db_recompute` |
+| Create the missing recurring runs for this period | `create_recurring_runs` | `ChecklistTemplate.make.ChecklistRun`, `endpoint.checklists.branch_rules` | yes | scaffold tests |
+| Record a recurring job as a paused schedule | `schedule_recurring_work` | `AgentTask.create`, `.get`, `.pause` | yes | scaffold tests |
+| Chase overdue runs and escalate unowned ones | `raise_followups` | `AgentTodo.create`, `AgentSession.create`, `endpoint.agent_governance.escalations.raise` | yes | scaffold tests |
+| Draft an inactive checklist from an SOP | `draft_template_from_sop` | `ChecklistTemplate.create`, `.get`, `.update` | yes | scaffold tests |
+| Open CAPA findings on rejected runs, schedule follow-ups | `open_capa_findings` | `endpoint.checklists.capa_finding`, `ChecklistTemplate.make.ChecklistRun` | yes | scaffold tests |
+| What do we know about corrective actions | `list_repeat_findings` | `endpoint.checklists.capa_trends`, `ChecklistCapaFinding.list` | no | scaffold tests |
+| Submit a run, only if nothing is pending | `submit_run` | `ChecklistRun.get`, `.submit_for_review` | yes | scaffold tests |
 | Publish an SOP, approve or reject a run, delete a record, read another team's data | `decline_request` | none | no | `refusal` |
 
 The last row is a refusal. Re-checked 2026-10-07: this seat's tool list has no publish, approve, reject or
@@ -92,6 +100,20 @@ delete tool, and rows report `delete: false`, so the agent declines. Another tea
 - **SOPs due for review:** published SOPs older than the review frequency from the checklist
   preferences (180 days if unreadable), counted from the publish date.
 
+### Actions beyond the audit
+
+- **Recurring runs:** the current period only, capped per call (default 10). A template the platform's own
+  branch-rule reader calls malformed is skipped, and so is a template whose rules cannot be read.
+- **Schedule:** recorded as a **paused** `AgentTask`. The platform's runtime, not this agent, runs scheduled
+  tasks, so a person activates them. A task the platform creates active is paused straight away.
+- **Follow-ups:** one todo per owner (titled `[seat23] <owner>: n overdue checklist run(s)`) and one batched
+  escalation per issue to the one assignable person, never one per run. Anything already open is skipped.
+- **Template from an SOP:** published or in-review SOPs only; always created inactive; every item must come
+  from the SOP's own text.
+- **CAPA:** unfinished required items on a rejected run become findings, with a follow-up run due in 7 days.
+  Review-rejection evidence needs audit-log access this seat lacks.
+- **Submit:** only a run this agent created, in progress, with no blocker or required item pending.
+
 ### Every model answer is verified
 
 `checklist_agent/verify.py` checks the final answer against the evidence the agent gathered. A figure,
@@ -104,11 +126,11 @@ wording are not checked, only numbers, dates and ids.
 ## Status (2026-10-07)
 
 **Built**
-- The twelve capabilities above, driven by `ChecklistPlanner` over the live-graph runtime.
+- The nineteen capabilities above, driven by `ChecklistPlanner` over the live-graph runtime.
 - The evaluation harness: recorder, snapshots, scoring, scripted and paced LLM transport, and the
   verifiers `sop.start_safety_audit`, `sop.process_to_sop`, `overdue_matches_db`, `db_recompute`,
   `no_write_calls`, plus generic ones.
-- 123 scaffold tests pass. They are Claude-written scaffolding and score nothing.
+- 162 scaffold tests pass. They are Claude-written scaffolding and score nothing.
 
 **Verified live (India tenant)**
 - **Overdue:** the total of 119 equals a database recompute and the dashboard (97 draft, 19 submitted, 3 in
@@ -135,6 +157,17 @@ wording are not checked, only numbers, dates and ids.
   every figure from the database and re-checked every number in the answer. All five written answers were
   the model's own words (attempt 1 or 2); none needed the data fallback.
 
+**Section 2 of the gap report is closed on the agent side** (see the gap report's 2026-10-18 update). Live:
+- **Recurring runs:** 59 recurring templates had no run this period; 18 can run and 41 cannot (malformed branch
+  rules). One run was created (`RUN-2026-00375`, draft, started). A second pass finds nothing to repeat.
+- **Schedule:** three paused tasks recorded (monthly audit, weekly recurring runs, weekly follow-ups).
+- **Follow-ups:** 205 overdue runs across 19 owners. One todo and two escalations to the one assignable person
+  were created (19 submitted runs have no reviewer; 90 overdue runs have no assignee). A second pass created
+  nothing. The first version counted a second escalation on the same session as created when the platform had
+  silently declined it; now a re-read must confirm it.
+- **Template from an SOP:** `SOP-2026-00101` became an inactive 5-item template that mirrors the SOP.
+- **Submit guard:** refused a run with 6 required items pending. The platform's own preview allowed it.
+
 **Not verified**
 - The shared gateway is often rate-limited or timing out (Gemini upstream `503`s, `nvidia` bursts). The
   agent stops visibly and the harness scores it `infra_error`, not a failure. The 3B local model (`ollama`)
@@ -142,7 +175,10 @@ wording are not checked, only numbers, dates and ids.
   `CHECKLIST_GATEWAY_FALLBACK_PROVIDERS=nvidia,groq` (both exist on the gateway) in `.env`.
 - The audit's create-then-start path has never completed live, because every create was refused. The
   re-read and start logic is covered only by the fake-platform scaffold tests.
-- The `rejected` run status has not been seen in the data; the overdue rule treats it as owner-blocked.
+- The `rejected` run status has not been seen in the data, so CAPA findings and follow-up runs were never
+  opened live. The overdue rule treats `rejected` as owner-blocked.
+- Whether the platform enforces pending required items when a run is actually submitted. Its preview says it
+  is allowed; confirming needs a real submit of a run we created.
 
 ## Next steps
 
@@ -151,7 +187,8 @@ wording are not checked, only numbers, dates and ids.
 2. Report the bug candidates below. Each needs a clean reproduction first.
 3. Decide how the audit should treat templates the platform will not run (see below).
 4. Register the repo on the platform with `TeamHarness.set_mine`.
-5. Wire `checklists/capa.py` into a capability (CAPA on rejected runs).
+5. Decide whether to withdraw the demo follow-ups (one todo, two escalations) and to confirm the submit
+   enforcement above with a real submit of our own run.
 
 **Decision open:** 4 of the 7 in-scope safety templates cannot produce a run today. Options: leave them
 reported as failed (current behaviour), or have the agent raise an escalation for a human to fix the
@@ -169,6 +206,8 @@ template under Checklists > Templates > Branching. The agent must not bypass the
 - `SOPDocument.approval_status` is null on the 100 seeded rows, although null is not an allowed value; a
   row created through the tool gets `not_required`.
 - A draft SOP has `published_at` set (SOP-2026-00100 is `draft`, inactive, `published_at: 2026-07-27`).
+- **Submitting a run with required items pending.** `tools.preview` of `ChecklistRun.submit_for_review` on an
+  in-progress run with 6 required items pending returns `allowed: true, blockers: []`. Unconfirmed at commit time.
 - Boolean fields such as `is_active` and `passed` come back as `1` and `0` although the tool schemas
   declare them boolean.
 
