@@ -77,3 +77,31 @@ async def test_prompts_are_about_checklists_not_another_domain():
     await planner.plan(GRAPH, EVENT)
     text = (seen["prompt"] + seen["system"] + planner._review_system()).lower()
     assert "checklist" in text and "employee" not in text and "jurisdiction" not in text
+
+
+FLAT_DECLINE = {"add": [{"id": "d1", "capability": "decline_request", "depends_on": []}],
+                "reason_code": "not_permitted", "explanation": "creating runs needs authority this run lacks",
+                "alternative": "preview with find_schedule_gaps", "cancel": [], "finish": False, "reason": "no authority"}
+
+
+async def test_arguments_a_model_put_beside_the_task_are_folded_into_it():
+    planner = ChecklistPlanner(llm_returning(FLAT_DECLINE), default_registry(), goal="g", repair_attempts=0)
+    patch = await planner.plan(GRAPH, EVENT)
+    assert [t.skill for t in patch.add] == ["decline_request"]
+    assert patch.add[0].input["reason_code"] == "not_permitted"
+
+
+async def test_arguments_put_inside_the_task_but_outside_arguments_are_folded_too():
+    flat = {"add": [{"id": "d1", "capability": "decline_request", "depends_on": [], "reason_code": "not_permitted",
+                     "explanation": "no authority"}], "cancel": [], "finish": False, "reason": "x"}
+    patch = await ChecklistPlanner(llm_returning(flat), default_registry(), goal="g", repair_attempts=0).plan(GRAPH, EVENT)
+    assert patch.add[0].input == {"reason_code": "not_permitted", "explanation": "no authority"}
+
+
+async def test_folding_never_widens_what_the_registry_allows():
+    smuggled = {**FLAT_DECLINE, "limit": 500}                    # not an argument of decline_request
+    patch = await ChecklistPlanner(llm_returning(smuggled), default_registry(), goal="g", repair_attempts=0).plan(GRAPH, EVENT)
+    assert patch.finish is True and "unsupported patch fields" in patch.reason
+    wrong = {**FLAT_DECLINE, "reason_code": "because"}           # an argument, but an invalid value
+    patch = await ChecklistPlanner(llm_returning(wrong), default_registry(), goal="g", repair_attempts=0).plan(GRAPH, EVENT)
+    assert patch.finish is True and "planner failed validation" in patch.reason

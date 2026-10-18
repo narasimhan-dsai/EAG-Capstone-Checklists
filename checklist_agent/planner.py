@@ -216,6 +216,30 @@ class ChecklistPlanner:
                     f"decline_request is not valid after {node_id} changed data; "
                     "report what happened with answer_with_evidence")
 
+    def _fold_misplaced_arguments(self, data: dict[str, Any]) -> dict[str, Any]:
+        """A model often puts a capability's arguments beside the task instead of inside it. When the patch
+        adds exactly one capability and every stray key is one of that capability's own arguments, move them
+        into ``arguments``. The registry still validates the values and the authority, so this only repairs
+        the shape; a key the capability does not declare is left in place and rejected as before."""
+        additions = data.get("add")
+        if not isinstance(additions, list) or len(additions) != 1 or not isinstance(additions[0], dict):
+            return data
+        item = additions[0]
+        name = item.get("capability")
+        if not isinstance(name, str) or name not in self.registry or item.get("arguments"):
+            return data
+        declared = set(self.registry.get(name).arguments)
+        task_keys = {"id", "capability", "arguments", "depends_on"}
+        patch_keys = {"add", "cancel", "finish", "reason"}
+        beside_task = {k for k in item if k not in task_keys}
+        beside_patch = {k for k in data if k not in patch_keys}
+        stray = beside_task | beside_patch
+        if not stray or not stray <= declared:
+            return data
+        arguments = {k: item[k] for k in beside_task} | {k: data[k] for k in beside_patch}
+        folded_item = {k: v for k, v in item.items() if k in task_keys} | {"arguments": arguments}
+        return {**{k: v for k, v in data.items() if k in patch_keys}, "add": [folded_item]}
+
     def _parse(self, text: str, graph: GraphSnapshot) -> GraphPatch:
         data = _json_object(text)
         shorthand = [name for name in data if name in self.registry]
@@ -229,6 +253,7 @@ class ChecklistPlanner:
                               "depends_on": dependencies}],
                     "cancel": [], "finish": False, "reason": "normalized capability decision"}
         allowed = {"add", "cancel", "finish", "reason"}
+        data = self._fold_misplaced_arguments(data)
         unknown_fields = set(data).difference(allowed)
         if unknown_fields:
             normalized = list(data.get("add", [])) if isinstance(data.get("add", []), list) else []

@@ -283,25 +283,34 @@ async def _start_run(ctx: RunContext, template, run_id: str, action: str) -> dic
     return {**base, "action": action, "status": status, "needs_owner": not template.assignee}
 
 
+async def _create_run(ctx: RunContext, template, name: str, due: date,
+                      notes: str) -> tuple[str | None, dict[str, Any] | None]:
+    """Create a run from a template and return its id, or a failure outcome. The make tool's response shape
+    is not relied on: the run is found again by the unique ``notes`` it was created with."""
+    made = await _call_tool(ctx, "ChecklistTemplate.make.ChecklistRun", {
+        "id": template.id, "name": name, "due_date": due.isoformat(), "notes": notes})
+    if made.get("error"):
+        if made.get("code") == "transport_error":
+            return None, _failed(template, "creating the run failed in transit; state unknown, a draft run may "
+                                           "exist (a retry will start it, not duplicate it)", error=made)
+        return None, _failed(template, "creating the run was refused", error=made)
+    rows, problem = await _fetch_all(ctx, "ChecklistRun.list", {"template_id": template.id})
+    if problem:
+        return None, _failed(template, "run was created but could not be re-read", error=problem)
+    ours = [r for r in rows if r.get("notes") == notes]
+    if len(ours) != 1:
+        return None, _failed(template, f"expected exactly one run with this marker, found {len(ours)}; "
+                                       "not started")
+    return ours[0]["id"], None
+
+
 async def _create_and_start(ctx: RunContext, template, today: date) -> dict[str, Any]:
     name = f"{template.name} - {today.isoformat()}"
     notes = f"{AGENT_MARKER} audit {today:%Y-%m} run {ctx.run_id}"
-    made = await _call_tool(ctx, "ChecklistTemplate.make.ChecklistRun", {
-        "id": template.id, "name": name, "due_date": month_end(today).isoformat(), "notes": notes})
-    if made.get("error"):
-        if made.get("code") == "transport_error":
-            return _failed(template, "creating the run failed in transit; state unknown, a draft run may "
-                                     "exist (a retry will start it, not duplicate it)", error=made)
-        return _failed(template, "creating the run was refused", error=made)
-    # The response shape of the make tool is not relied on: re-read to find the run we just created.
-    rows, problem = await _fetch_all(ctx, "ChecklistRun.list", {"template_id": template.id})
-    if problem:
-        return _failed(template, "run was created but could not be re-read", error=problem)
-    ours = [r for r in rows if r.get("notes") == notes]
-    if len(ours) != 1:
-        return _failed(template, f"expected exactly one run with this audit's marker, found {len(ours)}; "
-                                 "not started")
-    return await _start_run(ctx, template, ours[0]["id"], "created_and_started")
+    run_id, failure = await _create_run(ctx, template, name, month_end(today), notes)
+    if failure:
+        return failure
+    return await _start_run(ctx, template, run_id, "created_and_started")
 
 
 async def run_start_monthly_safety_audit(ctx: RunContext, task: TaskSpec) -> dict[str, Any]:
@@ -438,4 +447,6 @@ _WORKERS: dict[str, Callable[[RunContext, TaskSpec], Awaitable[dict[str, Any]]]]
 
 def build_skills(ctx: RunContext) -> dict[str, Skill]:
     """Bind every worker to one run's context. Called once per run."""
-    return {name: partial(worker, ctx) for name, worker in _WORKERS.items()}
+    from .action_workers import ACTION_WORKERS  # late: that module imports this one
+
+    return {name: partial(worker, ctx) for name, worker in {**_WORKERS, **ACTION_WORKERS}.items()}

@@ -51,6 +51,7 @@ def run_from_row(row: dict[str, Any]) -> Run:
         owner_name=row.get("_assigned_to_id_display") or None,
         reviewer_name=row.get("_reviewer_id_display") or None,
         updated_at=row.get("updated_at") or None,
+        number=row.get("number") or None,
     )
 
 

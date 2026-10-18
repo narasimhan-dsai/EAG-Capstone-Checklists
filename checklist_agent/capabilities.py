@@ -173,6 +173,9 @@ def default_registry() -> CapabilityRegistry:
     def string(description: str, **kwargs: Any) -> Argument:
         return Argument("string", description, **kwargs)
 
+    def integer(description: str, **kwargs: Any) -> Argument:
+        return Argument("integer", description, **kwargs)
+
     return CapabilityRegistry([
         Capability(
             "plan_safety_audit",
@@ -249,6 +252,72 @@ def default_registry() -> CapabilityRegistry:
             "that. A change: it needs explicit authority.",
             {"process_description": string("The process description from the user's request, verbatim.",
                                            maximum=8_000)},
+            side_effect=True,
+        ),
+        Capability(
+            "create_recurring_runs",
+            "Create the runs that recurring checklists are missing for the current period: every active daily, "
+            "weekly, monthly, quarterly or yearly template with no run due in it. Skips a template the platform "
+            "cannot run (malformed branch rules) or that has no items, never starts or changes an existing run, "
+            "and creates at most max_runs. A change: it needs explicit authority. Use find_schedule_gaps first "
+            "to see the gaps.",
+            {"max_runs": integer("Most runs to create in this call.", required=False, default=10, minimum=1,
+                                 maximum=25),
+             "category": string("Only templates of this category.", required=False, choices=(
+                 "operations", "safety", "quality", "design", "maintenance", "hr", "compliance", "other"))},
+            side_effect=True,
+        ),
+        Capability(
+            "schedule_recurring_work",
+            "Record a recurring job as a PAUSED scheduled task on the platform so a person can activate it: the "
+            "monthly safety audit, the weekly recurring runs, or the weekly follow-ups. It never leaves a task "
+            "active and does not run anything itself. A change: it needs explicit authority.",
+            {"job": string("Which job to schedule.", choices=("monthly_safety_audit", "weekly_recurring_runs",
+                                                              "weekly_followups"))},
+            side_effect=True,
+        ),
+        Capability(
+            "raise_followups",
+            "Chase overdue work. Creates one todo per owner with overdue runs (listing them), and, when escalate "
+            "is true, one batched escalation to a person for submitted runs that have no reviewer and for overdue "
+            "runs that have no assignee. Skips anything already open. A change: it needs explicit authority.",
+            {"max_todos": integer("Most owners to create a todo for.", required=False, default=10, minimum=1,
+                                  maximum=50),
+             "escalate": Argument("boolean", "Also escalate runs that need a person to assign a reviewer or owner.",
+                                  required=False, default=True)},
+            side_effect=True,
+        ),
+        Capability(
+            "draft_template_from_sop",
+            "Draft an inspection checklist from a published or in-review SOP, saved as an INACTIVE template for a "
+            "person to review. Takes the SOP number or id. Items must come from the SOP's own text. A change: it "
+            "needs explicit authority.",
+            {"sop": string("The SOP number (for example SOP-2026-00101), id or exact name.", maximum=200)},
+            side_effect=True,
+        ),
+        Capability(
+            "open_capa_findings",
+            "Open a corrective-action finding for each unfinished required item on a rejected run, flag repeats, "
+            "and schedule a follow-up verification run. Review-rejection evidence needs audit-log access this seat "
+            "lacks, so only unfinished required items are raised. A change: it needs explicit authority.",
+            {"max_findings": integer("Most findings to open in this call.", required=False, default=10,
+                                     minimum=1, maximum=25)},
+            side_effect=True,
+        ),
+        Capability(
+            "list_repeat_findings",
+            "Report corrective-action findings and recurrence from the platform's CAPA trends over a window, "
+            "including what the platform could not count (for example review rejections when the audit log is "
+            "unreadable). Read-only.",
+            {"days": integer("How many days back to look.", required=False, default=365, minimum=1, maximum=1500)},
+            families=("evidence",),
+        ),
+        Capability(
+            "submit_run",
+            "Submit a run for review, only if this agent created it, it is in progress and no blocker or required "
+            "item is still pending. Refuses otherwise and says why. Never approves or rejects. A change: it needs "
+            "explicit authority.",
+            {"run_id": string("The run id.", maximum=200, format="id")},
             side_effect=True,
         ),
         Capability(

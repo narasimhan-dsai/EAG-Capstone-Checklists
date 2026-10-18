@@ -61,6 +61,7 @@ class Run:
     owner_name: str | None = None
     reviewer_name: str | None = None
     updated_at: str | None = None
+    number: str | None = None
 
 
 @dataclass(frozen=True)
