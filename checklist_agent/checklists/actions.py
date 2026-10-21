@@ -56,6 +56,8 @@ def validate_template_draft(data: dict[str, Any], source_text: str) -> list[dict
         raise ValueError(f"items must be a list of 1 to {MAX_ITEMS} entries")
     clean: list[dict[str, Any]] = []
     for index, item in enumerate(items, 1):
+        if isinstance(item, str):
+            item = {"name": item}                      # a plain list of step names is a fine answer
         if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
             raise ValueError(f"item {index} needs a non-empty name")
         name = item["name"].strip()

@@ -43,7 +43,12 @@ def to_result_task(instance: str, task: dict[str, Any], row: dict[str, Any]) -> 
         passed, score, evidence = False, 0.0, f"{INFRA_PREFIX} {row.get('reason', 'the run could not be judged')}"
     else:
         passed, score = False, (ok / total if total else 0.0)
-        evidence = f"{ok}/{total} checks passed; failed: " + "; ".join(row.get("failed_claims") or ["see the run record"])
+        failed = _cut("; ".join(row.get("failed_details") or row.get("failed_claims") or ["see the run record"]), 300)
+        evidence = f"{ok}/{total} checks passed; failed: {failed}"
+        if row.get("diagnosis"):
+            evidence += f"; cause: {row['diagnosis']}"
+    if row.get("note"):
+        evidence += f"; note: {row['note']}"
     return {"id": f"{instance}:{row['id']}", "title": _cut(task.get("goal", row["id"]), TITLE_CHARS),
             "passed": passed, "score": score, "evidence": _cut(evidence, EVIDENCE_CHARS)}
 

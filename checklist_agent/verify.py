@@ -21,6 +21,21 @@ _MARKER = re.compile(r"(?m)(?:^|(?<=\s))\d{1,2}[.)](?=\s)")
 # Numbers glued to a word ("5S", "Q4", "74mm") are labels, not figures.
 _NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])")
 _EPSILON = 1e-9
+_UNITS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+          "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+          "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19}
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80,
+         "ninety": 90}
+_WORD_NUMBERS = {**_UNITS, **_TENS, "hundred": 100, "thousand": 1000}
+_WORDS = re.compile(r"[a-z]+")
+_COMPOUND = re.compile(rf"\b({'|'.join(_TENS)})[ -]({'|'.join(u for u in _UNITS if 0 < _UNITS[u] < 10)})\b")
+
+
+def _word_values(text: str) -> list[float]:
+    """Figures written as words ("one minute", "twenty-five"): a model may write them as digits."""
+    lowered = text.lower()
+    values = [float(_TENS[t] + _UNITS[u]) for t, u in _COMPOUND.findall(lowered)]
+    return values + [float(_WORD_NUMBERS[w]) for w in _WORDS.findall(lowered) if w in _WORD_NUMBERS]
 # Models often write the hyphens inside dates and ids as non-breaking hyphens or en dashes; they are the
 # same characters to a reader. An em dash (U+2014) is real punctuation and is left alone.
 _HYPHENS = str.maketrans({"\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2212": "-"})
@@ -88,7 +103,7 @@ def ungrounded(text: str, evidence: Any, extra: str = "") -> dict[str, list[str]
     evidence_text = _TIME.sub(" ", (json.dumps(evidence, ensure_ascii=False, default=str) + " " + extra)
                               .translate(_HYPHENS))
     known_ids, known_tokens = _tokens(evidence_text)
-    known = [float(token) for token in known_tokens]
+    known = [float(token) for token in known_tokens] + _word_values(evidence_text)
     fractional = [value for value in known if abs(value - round(value)) > _EPSILON]
     text, written = _written_dates(text)
     ids, numbers = _tokens(text)
@@ -148,3 +163,36 @@ def render_evidence(evidence: list[dict[str, Any]]) -> str:
         else:
             blocks.append(f"{item['capability']}:\n" + "\n".join(_lines(result, 1)))
     return "\n\n".join(blocks)
+
+
+# What the model is shown of a result: the totals, the splits and a few identifying rows, never whole rows.
+_ROW_KEYS = ("id", "number", "name", "title", "template", "template_id", "status", "due_date", "days_late",
+             "days_waiting", "blocked_on", "owner", "reviewer", "frequency", "period", "period_end", "category",
+             "action", "run_id", "code", "message", "reason", "error", "blockers_pending", "assigned",
+             "severity", "subject", "issue", "runs", "assignee")
+_ROWS_SHOWN = 8
+_TEXT_SHOWN = 160
+
+
+def _compact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _compact(item) for key, item in value.items()}
+    if isinstance(value, list):
+        if value and all(isinstance(item, dict) for item in value):
+            rows: list[Any] = [{key: _compact(row[key]) for key in _ROW_KEYS if key in row}
+                               for row in value[:_ROWS_SHOWN]]
+            if len(value) > _ROWS_SHOWN:
+                rows.append({"_omitted": len(value) - _ROWS_SHOWN})
+            return rows
+        return [_compact(item) for item in value[: _ROWS_SHOWN * 3]]
+    if isinstance(value, str) and len(value) > _TEXT_SHOWN:
+        return value[:_TEXT_SHOWN] + "…"
+    return value
+
+
+def compact_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The evidence as the model should see it. Each capability's result keeps its counts and splits; a list of
+    rows becomes its first few rows reduced to identifying fields, plus ``{"_omitted": n}``. The answer is still
+    checked against the full evidence, so shortening what the model reads cannot let an invented figure through."""
+    return [{**entry, "input": _compact(entry.get("input")), "result": _compact(entry.get("result"))}
+            for entry in evidence]

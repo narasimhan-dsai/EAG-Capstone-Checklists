@@ -36,7 +36,7 @@ async def test_a_completion_sends_system_and_user_messages_and_returns_the_gatew
     assert call["model"] == "m1" and call["temperature"] == 0 and call["max_tokens"] == 321
     assert call["messages"] == [{"role": "system", "content": "the rules"}, {"role": "user", "content": "the question"}]
     assert out == {"text": "hello", "provider": "openai-compatible", "model": "served-model",
-                   "input_tokens": 11, "output_tokens": 3}
+                   "input_tokens": 11, "output_tokens": 3, "finish_reason": None}
 
 
 async def test_an_empty_or_missing_reply_becomes_empty_text_not_a_crash():

@@ -7,6 +7,7 @@ agent being wrong.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -50,8 +51,25 @@ def score(record: dict[str, Any], verifier_results: list[dict[str, Any]]) -> dic
         return {"state": INFRA, "reason": broken[0]["infra_error"]}
     if not verifier_results:
         return {"state": INFRA, "reason": "task has no verifiers; nothing to judge"}
-    failed = [r["claim"] for r in verifier_results if not r["ok"]]
-    return {"state": FAIL, "failed_claims": failed} if failed else {"state": PASS}
+    failed = [r for r in verifier_results if not r["ok"]]
+    if not failed:
+        return {"state": PASS}
+    return {"state": FAIL, "failed_claims": [r["claim"] for r in failed],
+            "failed_details": [_detail(r) for r in failed]}
+
+
+def _brief(observed: Any) -> str:
+    """What a check saw, in a few words: the tools that wrote, or the figures that differed."""
+    if isinstance(observed, list) and observed and all(isinstance(o, dict) and "tool" in o for o in observed):
+        return "tools: " + ", ".join(dict.fromkeys(str(o["tool"]) for o in observed))
+    if isinstance(observed, list) and observed and all(isinstance(o, str) for o in observed):
+        return "; ".join(observed[:3])
+    return json.dumps(observed, default=str)[:140]
+
+
+def _detail(result: dict[str, Any]) -> str:
+    seen = result.get("observed")
+    return f"{result['claim']}: {_brief(seen)}" if seen not in (None, [], {}) else result["claim"]
 
 
 def exit_code(states: list[str]) -> int:

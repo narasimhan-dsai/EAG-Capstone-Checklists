@@ -33,7 +33,17 @@ from .capabilities import default_registry  # noqa: E402
 from .core.live_graph import GraphStore, LiveGraphExecutor  # noqa: E402
 from .llm import make_llm  # noqa: E402
 from .planner import ChecklistPlanner  # noqa: E402
+from .verify import render_evidence  # noqa: E402
 from .workers import RunContext, build_skills  # noqa: E402
+
+_NO_ANSWER = "A written answer could not be produced. Here is the data the agent gathered:"
+
+
+def _gathered_data(snapshot_nodes: dict, terminal: set[str]) -> str | None:
+    """What the run found, rendered without a model, for when it ends without a written answer."""
+    evidence = [{"capability": n["skill"], "input": n["input"], "result": n.get("result")}
+                for n in snapshot_nodes.values() if n["state"] == "succeeded" and n["skill"] not in terminal]
+    return f"{_NO_ANSWER}\n\n{render_evidence(evidence)}" if evidence else None
 
 
 def _failure(patch_events: list[dict]) -> str:
@@ -90,11 +100,17 @@ async def run_goal(
     answer_node = next(
         (n for n in snapshot.nodes.values() if n["skill"] in terminal and n["state"] == "succeeded"), None)
     outcome = (answer_node.get("result") or {}) if answer_node else {}
+    answer = outcome.get("text") if answer_node else None
+    verification = outcome.get("verification") if answer_node else None
+    if answer_node is None and (data := _gathered_data(snapshot.nodes, terminal)):
+        # The planner gave up after the data was in: the user still gets the data, plainly labelled.
+        answer = data
+        verification = {"verified": True, "attempts": 0, "source": "evidence_render", "ungrounded": []}
     return {
         "run_id": run_id, "data_dir": str(data_dir), "finished": report.finished,
         "executed": report.executed, "waiting": report.waiting, "patch_events": patch_events,
-        "answer": outcome.get("text") if answer_node else None,
-        "verification": outcome.get("verification") if answer_node else None,
+        "answer": answer,
+        "verification": verification,
         "failure": None if answer_node else _failure(patch_events),
         "declined": bool(outcome.get("declined")),
         "decline": outcome if outcome.get("declined") else None,

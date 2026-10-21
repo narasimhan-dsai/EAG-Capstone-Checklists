@@ -306,13 +306,22 @@ async def run_draft_template_from_sop(ctx: RunContext, task: TaskSpec) -> dict[s
                 "is_active": bool(found.get("is_active")), "items": len(found.get("items") or []),
                 "already_existed": True}
 
-    reply = await ctx.llm(json.dumps({"sop_title": sop.get("name"), "sop_text": source[:8000],
-                                      "allowed_item_types": sorted(ITEM_TYPES)}, ensure_ascii=False),
-                          _TEMPLATE_SYSTEM)
-    try:
-        items = validate_template_draft(_json_object(str(reply.get("text", ""))), source)
-    except ValueError as problem_:
-        return _error("draft_template_from_sop", "invalid_draft", str(problem_))
+    items: list[dict[str, Any]] | None = None
+    problem_note: str | None = None
+    for _ in (1, 2):                      # an unusable draft is asked for once more, with the problem named
+        payload: dict[str, Any] = {"sop_title": sop.get("name"), "sop_text": source[:8000],
+                                   "allowed_item_types": sorted(ITEM_TYPES)}
+        if problem_note:
+            payload["correction"] = (f"Your previous reply was not usable: {problem_note}. "
+                                     "Return only the JSON object described, with nothing around it.")
+        reply = await ctx.llm(json.dumps(payload, ensure_ascii=False), _TEMPLATE_SYSTEM)
+        try:
+            items = validate_template_draft(_json_object(str(reply.get("text", ""))), source)
+            break
+        except ValueError as problem_:
+            problem_note = str(problem_)
+    if items is None:
+        return _error("draft_template_from_sop", "invalid_draft", str(problem_note))
     category = sop.get("category") if sop.get("category") in load_rules().categories else "other"
     made = await _call_tool(ctx, "ChecklistTemplate.create", {
         "name": f"{sop.get('name')} - checklist (draft)", "category": category, "is_active": False,

@@ -249,9 +249,10 @@ def default_registry() -> CapabilityRegistry:
             "process_to_sop",
             "Turn a plain-language process description into an SOP: drafts it, saves it as a draft "
             "SOPDocument and submits it for review. It can never publish it; a human reviewer does "
-            "that. A change: it needs explicit authority.",
-            {"process_description": string("The process description from the user's request, verbatim.",
-                                           maximum=8_000)},
+            "that. The description is taken from the user's request. A change: it needs explicit authority.",
+            {"process_description": string("Optional. The description is taken from the user's request itself "
+                                           "(the text after its colon); give this only if the request has none.",
+                                           required=False, maximum=8_000)},
             side_effect=True,
         ),
         Capability(

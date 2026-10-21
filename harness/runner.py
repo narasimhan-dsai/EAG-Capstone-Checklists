@@ -168,7 +168,41 @@ async def run_task(task: dict[str, Any], args: argparse.Namespace, run_dir: Path
                                                    "verifier_results": results, **outcome})
     ok, total = _claims(results)
     return {"id": task["id"], "family": task["family"], "authored_by": task["authored_by"], "mode": mode,
-            "claims_passed": ok, "claims_total": total, **outcome}
+            "claims_passed": ok, "claims_total": total, "diagnosis": _diagnose(record),
+            "note": _answer_note(record), **outcome}
+
+
+def _diagnose(record: dict[str, Any]) -> str:
+    """Why a run went wrong, in a line, from its own record: a crash, a capability's error, or the planner
+    giving up. Empty when nothing went wrong."""
+    if record.get("exception"):
+        return f"{record['exception']['type']}: {record['exception']['message']}"[:240]
+    result = record.get("result") or {}
+    causes = []
+    for node in (result.get("nodes") or {}).values():
+        out = node.get("result")
+        if isinstance(out, dict) and out.get("error"):
+            causes.append(": ".join(str(part) for part in (node["skill"], out.get("code"), out.get("message")) if part))
+            break
+    if result.get("failure"):
+        causes.append(str(result["failure"]))
+    return " | ".join(causes)[:240]
+
+
+def _answer_note(record: dict[str, Any]) -> str:
+    """When the model's written answer was replaced by the plain data, say why: even a passing task should show
+    that the model did not deliver, and how its last reply ended."""
+    verification = (record.get("result") or {}).get("verification") or {}
+    if verification.get("source") != "evidence_render":
+        return ""
+    if not verification.get("attempts"):
+        return "no written answer was produced; the data is shown instead"
+    why = [", ".join(str(r) for r in verification.get("rejected") or [])]
+    if verification.get("finish_reason"):
+        why.append(f"finish_reason={verification['finish_reason']}")
+    if verification.get("llm_error"):
+        why.append(str(verification["llm_error"]))
+    return ("the model's answer was replaced by the data (" + "; ".join(w for w in why if w) + ")")[:260]
 
 
 def _claims(results: list[dict[str, Any]]) -> tuple[int, int]:

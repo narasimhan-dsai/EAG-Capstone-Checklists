@@ -14,7 +14,8 @@ import os
 from typing import Any
 
 DEFAULT_MODEL = "agentswitch-default"
-_MAX_TOKENS = 1600
+# A reasoning model spends part of this thinking before it writes; too small a budget returns empty text.
+_MAX_TOKENS = 4096
 
 
 class OpenAIClient:
@@ -38,7 +39,8 @@ class OpenAIClient:
         return {"text": reply.choices[0].message.content or "", "provider": "openai-compatible",
                 "model": getattr(reply, "model", None) or self.model,
                 "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
-                "output_tokens": getattr(usage, "completion_tokens", 0) or 0}
+                "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                "finish_reason": getattr(reply.choices[0], "finish_reason", None)}
 
     async def health(self) -> dict[str, Any]:
         """No cheap ping works on every compatible server; a bad endpoint shows up on the first completion."""

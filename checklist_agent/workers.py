@@ -15,6 +15,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -35,7 +36,7 @@ from .checklists.schedule import schedule_gaps
 from .checklists.scope import month_end
 from .core.live_graph import TaskSpec
 from .planner import _json_object
-from .verify import render_evidence, ungrounded
+from .verify import compact_evidence, render_evidence, ungrounded
 
 JURISDICTION = "IN"
 _PAGE = 200
@@ -215,12 +216,15 @@ _ANSWER_SYSTEM = (
 
 _WITHHELD = ("The written summary was withheld because it stated figures that are not in the data. "
              "Here is the data as the system returned it:")
+_EMPTY = "(the answer was empty)"
+_CALL_FAILED = "(the model call failed)"
 
 
 async def run_answer_with_evidence(ctx: RunContext, task: TaskSpec) -> dict[str, Any]:
     """The terminal capability. Reads every completed outcome from the graph's own journal, asks the model
-    to write the answer, and checks that every figure, date and id in it is in that evidence. A wrong answer
-    is corrected once; if it is still wrong the user gets the data itself, never an invented figure."""
+    to write the answer, and checks that every figure, date and id in it is in that evidence. A wrong, empty or
+    failed answer is retried once; after that the user gets the data itself, never an invented figure and never
+    silence."""
     snapshot = ctx.store.snapshot(ctx.run_id)
     evidence = [{"capability": node["skill"], "input": node["input"], "result": node.get("result")}
                 for node in snapshot.nodes.values()
@@ -229,24 +233,41 @@ async def run_answer_with_evidence(ctx: RunContext, task: TaskSpec) -> dict[str,
     allowed_extra = f"{ctx.goal} {task.input['query']}"
     rejected: list[str] = []
     reply: dict[str, Any] = {}
+    llm_error: str | None = None
+    finish: str | None = None
     for attempt in (1, 2):
-        payload: dict[str, Any] = {"request": task.input["query"], "evidence": evidence}
-        if rejected:
+        payload: dict[str, Any] = {"request": task.input["query"], "evidence": compact_evidence(evidence)}
+        if rejected == [_EMPTY]:
+            payload["correction"] = "Your previous answer was empty. Write the full answer now, from the evidence."
+        elif rejected and rejected != [_CALL_FAILED]:
             payload["correction"] = ("Your previous answer stated figures that are not in the evidence: "
                                      f"{rejected}. Rewrite it using only values that appear in the evidence, copying ids and dates "
                                      "exactly as written (full ids, dates as YYYY-MM-DD).")
-        reply = await ctx.llm(json.dumps(payload, ensure_ascii=False, default=str), _ANSWER_SYSTEM,
-                              **({"request": request} if request else {}))
-        text = reply.get("text", "")
+        try:
+            reply = await ctx.llm(json.dumps(payload, ensure_ascii=False, default=str), _ANSWER_SYSTEM,
+                                  **({"request": request} if request else {}))
+        except Exception as problem:  # a failed call is no reason to leave the user with nothing
+            llm_error, rejected = f"{type(problem).__name__}: {problem}", [_CALL_FAILED]
+            continue
+        text = reply.get("text") or ""
+        finish = reply.get("finish_reason") or finish
+        if not text.strip():
+            rejected = [_EMPTY]
+            continue
         found = ungrounded(text, evidence, allowed_extra)
         rejected = found["numbers"] + found["ids"]
         if not rejected:
             return {"text": text, "provider": reply.get("provider"), "model": reply.get("model"),
-                    "verification": {"verified": True, "attempts": attempt, "source": "model", "ungrounded": []}}
+                    "verification": {"verified": True, "attempts": attempt, "source": "model", "ungrounded": [],
+                                     **({"finish_reason": finish} if finish else {})}}
+    verification: dict[str, Any] = {"verified": True, "attempts": 2, "source": "evidence_render", "ungrounded": [],
+                                    "rejected": rejected}
+    if llm_error:
+        verification["llm_error"] = llm_error[:300]
+    if finish:
+        verification["finish_reason"] = finish
     return {"text": f"{_WITHHELD}\n\n{render_evidence(evidence)}", "provider": reply.get("provider"),
-            "model": reply.get("model"),
-            "verification": {"verified": True, "attempts": 2, "source": "evidence_render", "ungrounded": [],
-                             "rejected": rejected}}
+            "model": reply.get("model"), "verification": verification}
 
 
 async def run_decline_request(ctx: RunContext, task: TaskSpec) -> dict[str, Any]:
@@ -339,16 +360,26 @@ _SOP_SYSTEM = (
 )
 
 
-def _sop_prompt(description: str, categories: list[str]) -> str:
-    return json.dumps({"process_description": description, "allowed_categories": categories},
-                      ensure_ascii=False)
+def _sop_prompt(description: str, categories: list[str], correction: str | None = None) -> str:
+    payload: dict[str, Any] = {"process_description": description, "allowed_categories": categories}
+    if correction:
+        payload["correction"] = (f"Your previous reply was not usable: {correction}. "
+                                 "Return only the JSON object described, with nothing around it.")
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _first_text(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    return next((item[k] for k in keys if item.get(k)), None)
 
 
 def _validate_draft(data: dict[str, Any], categories: frozenset[str]) -> dict[str, Any]:
+    """The SOP a model proposed, checked. Harmless variations are accepted (a capitalised category, a section
+    body written as a list, ``heading`` for ``title``); anything that would write a bad record is refused."""
     title = data.get("title")
     if not isinstance(title, str) or not title.strip() or len(title) > 200:
         raise ValueError("title must be a non-empty string of at most 200 characters")
     category = data.get("category")
+    category = category.strip().lower() if isinstance(category, str) else category
     if category not in categories:
         raise ValueError(f"category {category!r} is not one of {sorted(categories)}")
     sections = data.get("sections")
@@ -356,12 +387,40 @@ def _validate_draft(data: dict[str, Any], categories: frozenset[str]) -> dict[st
         raise ValueError("sections must be a list of 1 to 12 items")
     clean = []
     for index, section in enumerate(sections):
-        if not (isinstance(section, dict) and isinstance(section.get("title"), str)
-                and isinstance(section.get("body"), str)
-                and section["title"].strip() and section["body"].strip()):
+        section = section if isinstance(section, dict) else {}
+        heading, body = _first_text(section, ("title", "heading", "name")), _first_text(section, ("body", "content", "text"))
+        if isinstance(body, list) and all(isinstance(line, str) for line in body):
+            body = "\n".join(line.strip() for line in body if line.strip())
+        if not (isinstance(heading, str) and isinstance(body, str) and heading.strip() and body.strip()):
             raise ValueError(f"section {index + 1} needs a non-empty title and body")
-        clean.append({"title": section["title"].strip(), "body": section["body"].strip()})
+        clean.append({"title": heading.strip(), "body": body.strip()})
     return {"title": title.strip(), "category": category, "sections": clean}
+
+
+_WORD = re.compile(r"[a-z0-9]+")
+_SAME_REQUEST = 0.8
+_MIN_DESCRIPTION_WORDS = 4
+
+
+def _from_request(description: str, goal: str) -> bool:
+    """Is the description the user's own words? A light paraphrase is fine; text the planner read from other
+    rows (a run name, a note) is data written by other teams and must not steer a write. At least 80% of its
+    words must appear in the user's request."""
+    words = _WORD.findall(description.lower())
+    if not words:
+        return False
+    in_goal = set(_WORD.findall(goal.lower()))
+    return sum(1 for w in words if w in in_goal) / len(words) >= _SAME_REQUEST
+
+
+def _request_description(goal: str, proposed: str | None) -> str | None:
+    """The process description, taken from the request itself: what follows its first colon. The planner's
+    copy is used only when the request has no such text, and only if it is from the request."""
+    tail = goal.split(":", 1)[1].strip() if ":" in goal else ""
+    if len(tail.split()) >= _MIN_DESCRIPTION_WORDS:
+        return tail
+    proposed = (proposed or "").strip()
+    return proposed if proposed and _from_request(proposed, goal) else None
 
 
 def _sop_content(sections: list[dict[str, str]], key: str) -> str:
@@ -376,25 +435,28 @@ def _sop_result(sop: dict[str, Any], status: Any, **extra: Any) -> dict[str, Any
 
 
 async def run_process_to_sop(ctx: RunContext, task: TaskSpec) -> dict[str, Any]:
-    description = task.input["process_description"]
-    # The description must be the user's own words. Text the planner read from other rows (a run name,
-    # a note) is data written by other teams and must not steer a write.
-    if " ".join(description.split()) not in " ".join(ctx.goal.split()):
+    description = _request_description(ctx.goal, task.input.get("process_description"))
+    if description is None:
         return {"error": True, "tool": "process_to_sop", "code": "description_not_from_request",
-                "message": "process_description must be copied verbatim from the user's request"}
+                "message": "the request contains no process description to turn into an SOP"}
     rules = load_rules()
-    reply = await ctx.llm(_sop_prompt(description, sorted(rules.sop_categories)), _SOP_SYSTEM)
-    try:
-        draft = _validate_draft(_json_object(str(reply.get("text", ""))), rules.sop_categories)
-    except ValueError as problem:
-        return {"error": True, "tool": "process_to_sop", "code": "invalid_draft", "message": str(problem)}
-
-    drafted = " ".join([draft["title"], *(f"{x['title']} {x['body']}" for x in draft["sections"])])
-    invented = ungrounded(drafted, [], description)
-    if invented["numbers"] or invented["ids"]:
-        return {"error": True, "tool": "process_to_sop", "code": "invalid_draft",
-                "message": "the draft states figures that are not in the description: "
-                           f"{invented['numbers'] + invented['ids']}"}
+    draft: dict[str, Any] | None = None
+    problem_note: str | None = None
+    for _ in (1, 2):                      # an unusable draft is asked for once more, with the problem named
+        reply = await ctx.llm(_sop_prompt(description, sorted(rules.sop_categories), problem_note), _SOP_SYSTEM)
+        try:
+            candidate = _validate_draft(_json_object(str(reply.get("text", ""))), rules.sop_categories)
+            written = " ".join([candidate["title"], *(f"{x['title']} {x['body']}" for x in candidate["sections"])])
+            invented = ungrounded(written, [], description)
+            if invented["numbers"] or invented["ids"]:
+                raise ValueError(f"the draft states figures that are not in the description: "
+                                 f"{invented['numbers'] + invented['ids']}")
+            draft = candidate
+            break
+        except ValueError as problem:
+            problem_note = str(problem)
+    if draft is None:
+        return {"error": True, "tool": "process_to_sop", "code": "invalid_draft", "message": problem_note}
 
     # The retry key is the description, not the LLM's title, which can differ on every attempt.
     key = description_key(description)

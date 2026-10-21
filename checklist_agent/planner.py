@@ -147,6 +147,7 @@ class ChecklistPlanner:
         prompt = self._prompt(graph, event)
         error: str | None = None
         raw = ""
+        last_finish = None
         for attempt in range(self.repair_attempts + 1):
             request = prompt if error is None else self._repair_prompt(prompt, raw, error)
             try:
@@ -154,6 +155,7 @@ class ChecklistPlanner:
             except Exception as problem:
                 return self._call_failed(problem, graph, event, attempt)
             raw = str(reply.get("text", ""))
+            last_finish = reply.get("finish_reason")
             try:
                 patch = self._parse(raw, graph)
                 if self.review_terminal and any(
@@ -164,16 +166,23 @@ class ChecklistPlanner:
                         review_reply = await self.llm(self._review_prompt(graph), self._review_system())
                     except Exception as problem:
                         return self._call_failed(problem, graph, event, attempt)
-                    review = _json_object(str(review_reply.get("text", "")))
-                    ready = review.get("ready")
-                    missing = review.get("missing", [])
-                    if not isinstance(ready, bool) or not isinstance(missing, list):
-                        raise PlannerOutputError("evidence review must return ready:boolean and missing:array")
-                    self.history.append({"event": event.sequence, "attempt": attempt + 1,
-                                         "kind": "evidence_review", "ready": ready,
-                                         "missing": _clip(missing), "reason": review.get("reason")})
-                    if not ready:
-                        raise PlannerOutputError(f"terminal evidence is not ready; missing={missing}")
+                    # The review is advice. A reply that cannot be read is no reason to hold the answer back,
+                    # and "not ready" asks for more only until the last attempt: an answer from what was gathered
+                    # beats ending the run with nothing.
+                    try:
+                        review = _json_object(str(review_reply.get("text", "")))
+                    except PlannerOutputError:
+                        review = {}
+                    ready, missing = review.get("ready"), review.get("missing", [])
+                    if isinstance(ready, bool) and isinstance(missing, list):
+                        self.history.append({"event": event.sequence, "attempt": attempt + 1,
+                                             "kind": "evidence_review", "ready": ready,
+                                             "missing": _clip(missing), "reason": review.get("reason")})
+                        if not ready and attempt < self.repair_attempts:
+                            raise PlannerOutputError(f"terminal evidence is not ready; missing={missing}")
+                    else:
+                        self.history.append({"event": event.sequence, "attempt": attempt + 1,
+                                             "kind": "evidence_review", "ready": None, "unreadable": True})
             except (PlannerOutputError, CapabilityError) as problem:
                 error = str(problem)
                 self.history.append({"event": event.sequence, "attempt": attempt + 1,
@@ -189,7 +198,8 @@ class ChecklistPlanner:
                                "calls": len(self.history), "error": error, "history": list(self.history)}
         active = any(node["state"] in {"pending", "running", "waiting"}
                      for node in graph.nodes.values())
-        return GraphPatch(finish=not active, reason=f"planner failed validation after repair: {error}")
+        how_it_ended = f" (last reply finish_reason={last_finish})" if last_finish else ""
+        return GraphPatch(finish=not active, reason=f"planner failed validation after repair: {error}{how_it_ended}")
 
     def _call_failed(self, problem: Exception, graph: GraphSnapshot, event: Event, attempt: int) -> GraphPatch:
         """An LLM call raised (gateway 503, timeout): stop visibly, never crash the run."""

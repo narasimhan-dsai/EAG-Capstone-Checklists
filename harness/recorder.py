@@ -13,9 +13,20 @@ from typing import Any
 _READ_SUFFIXES = {"list", "get"}
 
 
-def is_mutating_tool(name: str) -> bool:
-    """Conservative: anything that is not a plain ``.list`` / ``.get`` counts as mutating."""
-    return name.rsplit(".", 1)[-1] not in _READ_SUFFIXES
+# Platform tools that only read, whatever their name looks like. Everything else that is not a plain
+# ``.list`` / ``.get`` is treated as a write, so a new tool is never assumed harmless.
+_READ_ONLY_TOOLS = frozenset({
+    "endpoint.checklists.capa_trends", "endpoint.checklists.scan_resolve", "endpoint.checklists.custody_chain",
+    "endpoint.agent_governance.escalations.assignees", "tools.preview", "tools.describe", "tools.search",
+})
+
+
+def is_mutating_tool(name: str, arguments: dict[str, Any] | None = None) -> bool:
+    if name.rsplit(".", 1)[-1] in _READ_SUFFIXES or name in _READ_ONLY_TOOLS:
+        return False
+    if name == "endpoint.checklists.branch_rules":            # reads by default; only op=save writes
+        return (arguments or {}).get("op", "read") != "read"
+    return True
 
 
 class RecordingClient:
@@ -27,7 +38,7 @@ class RecordingClient:
         return getattr(self._inner, name)
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None, *, jurisdiction: str) -> Any:
-        entry = self._start("mcp", name, arguments or {}, jurisdiction, is_mutating_tool(name))
+        entry = self._start("mcp", name, arguments or {}, jurisdiction, is_mutating_tool(name, arguments))
         return await self._finish(entry, self._inner.call_tool(name, arguments, jurisdiction=jurisdiction))
 
     async def close(self) -> None:
