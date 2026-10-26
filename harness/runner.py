@@ -307,7 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="run the official suite and write results.json (what the platform's runner does)")
     parser.add_argument("--dry", action="store_true", help="with --official: skip tasks that change data")
     parser.add_argument("--out", default="results.json", help="with --official: the results file")
-    parser.add_argument("--budget-minutes", type=float, default=16.0, help="with --official: stop starting tasks after this")
+    parser.add_argument("--budget-minutes", type=float, default=22.0, help="with --official: stop starting tasks after this")
     parser.add_argument("--parallel", type=int, default=6, help="with --official: read-only tasks run at once")
     parser.add_argument("--only", help="with --official: comma-separated task ids to run")
     parser.add_argument("--tasks", default=str(EVALS / "tasks" / "scaffold.jsonl"), help="glob of task files")

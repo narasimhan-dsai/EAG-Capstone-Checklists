@@ -63,3 +63,12 @@ def test_a_local_run_can_slow_down_and_pick_tasks():
     args = build_parser().parse_args(["--official", "--parallel", "1", "--only", "overdue,completion"])
     assert args.parallel == 1 and args.only == "overdue,completion"
     assert build_parser().parse_args(["--official"]).parallel == 6
+
+
+def test_the_last_task_that_may_start_can_still_finish_before_the_platform_ends_the_run():
+    from harness.runner import build_parser
+    config = tomllib.loads((ROOT / "agentswitch-harness.toml").read_text())
+    start_cutoff = build_parser().parse_args(["--official"]).budget_minutes
+    per_task = 6                                   # the per-task limit, in minutes
+    assert config["timeout_minutes"] >= start_cutoff + per_task + 1, (config["timeout_minutes"], start_cutoff)
+    assert config["timeout_minutes"] >= 24         # two batches of reads plus two writes, all at the limit
