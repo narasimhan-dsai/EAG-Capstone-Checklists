@@ -279,6 +279,21 @@ def _error(tool: str, code: str, message: str) -> dict[str, Any]:
     return {"error": True, "tool": tool, "code": code, "message": message}
 
 
+_NUMBERED = re.compile(r"(?:^|\s)\d{1,2}[.)]\s+(.+?)(?=\s+\d{1,2}[.)]\s|$)", re.S)
+
+
+def _fallback_items(sop: dict[str, Any]) -> list[dict[str, Any]]:
+    """Checklist items taken straight from the SOP's own numbered steps, for when the model gives nothing
+    usable. Nothing is added, so nothing in it can be invented."""
+    texts = [str(sec.get("content") or "") for sec in sop.get("sections") or []] + [str(sop.get("content") or "")]
+    for text in texts:
+        steps = [" ".join(step.split()).rstrip(".;") for step in _NUMBERED.findall(_plain(text))]
+        steps = [step for step in steps if step][:15]
+        if steps:
+            return [{"name": step[:160], "item_type": "check"} for step in steps]
+    return []
+
+
 async def run_draft_template_from_sop(ctx: RunContext, task: TaskSpec) -> dict[str, Any]:
     reference = task.input["sop"].strip()
     sops, problem = await _fetch_all(ctx, "SOPDocument.list")
@@ -314,12 +329,19 @@ async def run_draft_template_from_sop(ctx: RunContext, task: TaskSpec) -> dict[s
         if problem_note:
             payload["correction"] = (f"Your previous reply was not usable: {problem_note}. "
                                      "Return only the JSON object described, with nothing around it.")
-        reply = await ctx.llm(json.dumps(payload, ensure_ascii=False), _TEMPLATE_SYSTEM)
         try:
+            reply = await ctx.llm(json.dumps(payload, ensure_ascii=False), _TEMPLATE_SYSTEM)
             items = validate_template_draft(_json_object(str(reply.get("text", ""))), source)
             break
         except ValueError as problem_:
             problem_note = str(problem_)
+        except Exception as failure:  # noqa: BLE001 - a model that errors or times out must not lose the template
+            problem_note = f"the model call failed: {failure}"
+    if items is None:
+        try:
+            items = validate_template_draft({"items": _fallback_items(sop)}, source)
+        except ValueError:
+            items = None
     if items is None:
         return _error("draft_template_from_sop", "invalid_draft", str(problem_note))
     category = sop.get("category") if sop.get("category") in load_rules().categories else "other"

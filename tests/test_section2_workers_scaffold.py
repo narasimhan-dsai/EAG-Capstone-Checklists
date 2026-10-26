@@ -300,7 +300,7 @@ async def test_a_draft_that_invents_a_figure_or_comes_from_an_unready_sop_writes
     invented = {"items": [{"name": "Run the machine for 15 minutes"}]}
     seat = Seat(sops=[SOP])
     out = await go(skills_for(seat, llm_returning(invented)), "draft_template_from_sop", sop="SOP-2026-00101")
-    assert out["error"] is True and out["code"] == "invalid_draft" and seat.templates == []
+    assert out["error"] is True and out["code"] == "invalid_draft" and seat.templates == []   # no steps to fall back on
     for sop, code in (({**SOP, "status": "draft"}, "sop_not_ready"), ({**SOP, "content": None, "sections": []}, "sop_has_no_content")):
         seat = Seat(sops=[sop])
         res = await go(skills_for(seat, llm_returning(GOOD)), "draft_template_from_sop", sop="SOP-2026-00101")

@@ -201,18 +201,19 @@ async def test_a_retry_finds_its_own_document_and_does_not_create_another():
     assert again["already_existed"] is True and len(platform.sops) == 1
 
 
-async def test_bad_llm_output_writes_nothing():
+async def test_bad_llm_output_never_reaches_the_platform_the_description_is_used_instead():
     for bad in ("not json at all", {**GOOD_DRAFT, "category": "astrology"}, {**GOOD_DRAFT, "sections": []},
                 {"title": "", "category": "safety", "sections": GOOD_DRAFT["sections"]}):
         platform = FakePlatform()
         result = await sop(platform, llm_returning(bad))
-        assert result["error"] is True and result["code"] == "invalid_draft"
-        assert not [n for n, _ in platform.calls if n == "SOPDocument.create"]
+        created = [a for n, a in platform.calls if n == "SOPDocument.create"]
+        assert not result.get("error") and len(created) == 1
+        assert created[0]["category"] != "astrology" and created[0]["name"].strip() and created[0]["sections"]
 
 
-async def test_a_sop_draft_with_a_figure_the_description_never_gave_writes_nothing():
+async def test_a_sop_draft_with_a_figure_the_description_never_gave_is_replaced_by_the_description():
     invented = {**GOOD_DRAFT, "sections": [{"title": "Steps", "body": "1. Wait 45 minutes. 2. Lock."}]}
     platform = FakePlatform()
     result = await sop(platform, llm_returning(invented))
-    assert result["error"] is True and result["code"] == "invalid_draft" and "45" in result["message"]
-    assert not [n for n, _ in platform.calls if n == "SOPDocument.create"]
+    created = [a for n, a in platform.calls if n == "SOPDocument.create"]
+    assert not result.get("error") and len(created) == 1 and "45" not in created[0]["content"]

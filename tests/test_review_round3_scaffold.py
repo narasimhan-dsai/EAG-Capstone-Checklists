@@ -180,12 +180,25 @@ async def test_an_unreadable_sop_draft_is_retried_once_and_the_second_prompt_nam
     assert out["status"] == "review" and len(prompts) == 2 and "correction" in json.loads(prompts[1])
 
 
-async def test_two_unusable_drafts_create_nothing_and_cost_exactly_two_calls():
+async def test_two_unusable_drafts_fall_back_to_a_draft_built_from_the_requests_own_words():
     platform = FakePlatform()
-    skill, prompts = sop_skill(platform, ["not json", "still not json"])
+    skill, prompts = sop_skill(platform, ["", "still not json"])
     out = await skill(TaskSpec("p", "process_to_sop", {}))
-    assert out["code"] == "invalid_draft" and len(prompts) == 2
-    assert not [n for n, _ in platform.calls if n == "SOPDocument.create"]
+    assert len(prompts) == 2 and out["status"] == "review" and out["submitted"] and not out.get("error")
+    created = [a for n, a in platform.calls if n == "SOPDocument.create"]
+    assert len(created) == 1
+    text = created[0]["content"] + created[0]["name"]
+    assert "Check the guards" in text and "supervisor" in text and created[0]["category"] == "safety"
+    assert len(created[0]["sections"]) >= 2
+
+
+async def test_the_fallback_draft_is_built_only_from_the_description():
+    from checklist_agent.workers import _fallback_draft
+    draft = _fallback_draft("Daily start-up check. The operator inspects the guards, confirms the area is clear, "
+                            "and reports any fault.", frozenset({"safety", "other"}))
+    assert draft["title"] == "Daily start-up check" and draft["category"] == "safety"
+    body = " ".join(s["body"] for s in draft["sections"]).lower()
+    assert "inspects the guards" in body and "confirms the area is clear" in body and "reports any fault" in body
 
 
 async def test_a_template_draft_is_retried_once_too():
@@ -247,3 +260,32 @@ def test_the_note_reaches_the_evidence_for_passing_and_failing_tasks():
                                                                  "failed_claims": ["x"], "diagnosis": "boom"})
     assert "cause: boom" in bad["evidence"] and "finish_reason=length" in bad["evidence"]
     assert ungrounded("", [], "") == {"numbers": [], "ids": []}
+
+
+async def test_an_sop_from_an_earlier_run_does_not_stop_this_run_from_drafting_its_own():
+    platform = FakePlatform()
+    first = await sop_skill(platform, [GOOD_DRAFT])[0](TaskSpec("p", "process_to_sop", {}))
+
+    async def llm(prompt, system, **kwargs):
+        return {"text": json.dumps(GOOD_DRAFT)}
+
+    later = RunContext(run_id="r2", store=None, llm=llm, agentswitch=platform, clock=lambda: TODAY, goal=REQUEST)
+    second = await build_skills(later)["process_to_sop"](TaskSpec("p", "process_to_sop", {}))
+    assert first["sop_id"] != second["sop_id"] and second["already_existed"] is False
+    assert len(platform.sops) == 2
+
+
+async def test_when_the_model_gives_nothing_usable_the_template_is_built_from_the_sops_own_steps():
+    sop = {"id": "sop-1", "number": "SOP-1", "name": "Machine start-up", "status": "review", "category": "safety",
+           "content": "<h3>Steps</h3><p>1. Check the guards.\n2. Confirm the area is clear.\n3. Report any fault.</p>",
+           "sections": [{"title": "Steps", "content": "1. Check the guards.\n2. Confirm the area is clear.\n3. Report any fault."}]}
+    platform = Seat(sops=[sop])
+
+    async def llm(prompt, system, **kwargs):
+        raise TimeoutError("the model timed out")
+
+    ctx = RunContext(run_id="r", store=None, llm=llm, agentswitch=platform, clock=lambda: TODAY)
+    out = await build_skills(ctx)["draft_template_from_sop"](TaskSpec("t", "draft_template_from_sop", {"sop": "SOP-1"}))
+    assert not out.get("error") and out["is_active"] is False and out["items"] == 3
+    names = [i["name"] for i in platform.templates[0]["items"]]
+    assert names == ["Check the guards", "Confirm the area is clear", "Report any fault"]

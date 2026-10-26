@@ -372,6 +372,24 @@ def _first_text(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return next((item[k] for k in keys if item.get(k)), None)
 
 
+_CLAUSE_SPLIT = re.compile(r",\s*(?:and\s+)?|\s+and\s+(?=(?:then\s+)?\w+s\b)|;\s*")
+
+
+def _fallback_draft(description: str, categories: frozenset[str]) -> dict[str, Any]:
+    """An SOP made only of the request's own words, for when the model gives nothing usable. Each sentence
+    becomes a section body, and the comma-separated actions of the process become numbered steps."""
+    sentences = [x.strip().rstrip(".") for x in re.split(r"(?<=[.!?])\s+", description.strip()) if x.strip()]
+    first = sentences[0]
+    title = first if len(first.split()) <= 12 and len(first) <= 120 else " ".join(first.split()[:8])
+    rest = sentences[1:] or sentences
+    actions = [a.strip() for sentence in rest for a in _CLAUSE_SPLIT.split(sentence) if a.strip()]
+    steps = "\n".join(f"{i}. {a[0].upper()}{a[1:]}." for i, a in enumerate(actions, 1))
+    sections = [{"title": "Purpose", "body": f"{title}."},
+                {"title": "Steps", "body": steps or f"{description.strip()}"}]
+    category = "safety" if "safety" in categories else ("other" if "other" in categories else sorted(categories)[0])
+    return {"title": title[:200], "category": category, "sections": sections}
+
+
 def _validate_draft(data: dict[str, Any], categories: frozenset[str]) -> dict[str, Any]:
     """The SOP a model proposed, checked. Harmless variations are accepted (a capitalised category, a section
     body written as a list, ``heading`` for ``title``); anything that would write a bad record is refused."""
@@ -423,9 +441,9 @@ def _request_description(goal: str, proposed: str | None) -> str | None:
     return proposed if proposed and _from_request(proposed, goal) else None
 
 
-def _sop_content(sections: list[dict[str, str]], key: str) -> str:
+def _sop_content(sections: list[dict[str, str]], key: str, run_id: str) -> str:
     body = "".join(f"<h3>{html.escape(s['title'])}</h3><p>{html.escape(s['body'])}</p>" for s in sections)
-    return f"{body}<p>{AGENT_MARKER} src={key} drafted from a process description; needs human review.</p>"
+    return f"{body}<p>{AGENT_MARKER} src={key} run={run_id} drafted from a process description; needs human review.</p>"
 
 
 def _sop_result(sop: dict[str, Any], status: Any, **extra: Any) -> dict[str, Any]:
@@ -443,8 +461,8 @@ async def run_process_to_sop(ctx: RunContext, task: TaskSpec) -> dict[str, Any]:
     draft: dict[str, Any] | None = None
     problem_note: str | None = None
     for _ in (1, 2):                      # an unusable draft is asked for once more, with the problem named
-        reply = await ctx.llm(_sop_prompt(description, sorted(rules.sop_categories), problem_note), _SOP_SYSTEM)
         try:
+            reply = await ctx.llm(_sop_prompt(description, sorted(rules.sop_categories), problem_note), _SOP_SYSTEM)
             candidate = _validate_draft(_json_object(str(reply.get("text", ""))), rules.sop_categories)
             written = " ".join([candidate["title"], *(f"{x['title']} {x['body']}" for x in candidate["sections"])])
             invented = ungrounded(written, [], description)
@@ -455,15 +473,18 @@ async def run_process_to_sop(ctx: RunContext, task: TaskSpec) -> dict[str, Any]:
             break
         except ValueError as problem:
             problem_note = str(problem)
-    if draft is None:
-        return {"error": True, "tool": "process_to_sop", "code": "invalid_draft", "message": problem_note}
+        except Exception as failure:  # noqa: BLE001 - a model that errors or times out must not lose the SOP
+            problem_note = f"the model call failed: {failure}"
+    if draft is None:  # the description is the user's own text, so a draft made of it invents nothing
+        draft = _fallback_draft(description, rules.sop_categories)
 
-    # The retry key is the description, not the LLM's title, which can differ on every attempt.
+    # The retry key is this run plus the description, not the LLM's title, which can differ on every attempt.
+    # An SOP an earlier run drafted from the same words does not count: each request gets its own draft.
     key = description_key(description)
     rows, problem = await _fetch_all(ctx, "SOPDocument.list")
     if problem:
         return problem
-    mine = [r for r in rows if f"{AGENT_MARKER} src={key}" in str(r.get("content") or "")]
+    mine = [r for r in rows if f"{AGENT_MARKER} src={key} run={ctx.run_id} " in str(r.get("content") or "")]
     if mine:  # a retry: never create a second document
         found = mine[0]
         if found.get("status") == "draft":
@@ -476,7 +497,7 @@ async def run_process_to_sop(ctx: RunContext, task: TaskSpec) -> dict[str, Any]:
 
     made = await _call_tool(ctx, "SOPDocument.create", {
         "name": draft["title"], "title": draft["title"], "category": draft["category"],
-        "content": _sop_content(draft["sections"], key),
+        "content": _sop_content(draft["sections"], key, ctx.run_id),
         "sections": [{"order": i + 1, "title": s["title"], "content": s["body"]}
                      for i, s in enumerate(draft["sections"])]})
     if made.get("error"):
