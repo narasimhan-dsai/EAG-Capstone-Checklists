@@ -91,28 +91,41 @@ RunTask = Callable[[dict[str, Any], Any, Path], Awaitable[dict[str, Any]]]
 
 async def run_official(tasks: list[dict[str, Any]], *, instance: str, armed: bool, budget_seconds: float,
                        out_path: Path | str, runner_args: Any, run_task: RunTask,
-                       task_timeout: float = 300) -> dict[str, Any]:
+                       task_timeout: float = 360, parallel: int = 6) -> dict[str, Any]:
     """Run the suite and write the results file. ``armed`` means this is the throwaway copy, so tasks that
-    change data may run; otherwise (a local rehearsal) they are skipped and nothing is written."""
+    change data may run; otherwise (a local rehearsal) they are skipped and nothing is written.
+
+    Tasks that only read run ``parallel`` at a time, so a slow model still fits the time budget. Tasks that
+    change data run one at a time afterwards, so they never see each other's writes. Results keep file order."""
     deadline = time.monotonic() + budget_seconds
     run_dir = Path(tempfile.mkdtemp(prefix="official-run-"))
-    results: list[dict[str, Any]] = []
-    for task in tasks:
+
+    async def one(task: dict[str, Any]) -> dict[str, Any]:
         if not armed and task.get("allow"):
-            results.append(_failed(instance, task, "skipped: tasks that change data are not armed in a dry run"))
-            continue
+            return _failed(instance, task, "skipped: tasks that change data are not armed in a dry run")
         if time.monotonic() >= deadline:
-            results.append(_failed(instance, task, "not run: the time budget was used up"))
-            continue
+            return _failed(instance, task, "not run: the time budget was used up")
         try:
             row = await asyncio.wait_for(run_task(task, runner_args, run_dir), timeout=task_timeout)
         except asyncio.TimeoutError:
-            results.append(_failed(instance, task, f"{INFRA_PREFIX} the task did not finish in {task_timeout:g} seconds"))
-            continue
+            return _failed(instance, task, f"{INFRA_PREFIX} the task did not finish in {task_timeout:g} seconds")
         except Exception as problem:  # one task crashing must not cost the others
-            results.append(_failed(instance, task, f"crashed: {type(problem).__name__}: {problem}"))
-            continue
-        results.append(to_result_task(instance, task, row))
+            return _failed(instance, task, f"crashed: {type(problem).__name__}: {problem}")
+        return to_result_task(instance, task, row)
+
+    gate = asyncio.Semaphore(max(1, parallel))
+
+    async def reading(task: dict[str, Any]) -> dict[str, Any]:
+        async with gate:
+            return await one(task)
+
+    done: dict[str, dict[str, Any]] = {}
+    readers = [t for t in tasks if not t.get("allow")]
+    for task, outcome in zip(readers, await asyncio.gather(*(reading(t) for t in readers))):
+        done[task["id"]] = outcome
+    for task in (t for t in tasks if t.get("allow")):
+        done[task["id"]] = await one(task)
+    results = [done[t["id"]] for t in tasks]
     payload = build_results(instance, results)
     validate_results(payload)
     Path(out_path).write_text(json.dumps(payload, indent=2))

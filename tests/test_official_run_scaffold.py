@@ -117,3 +117,44 @@ def test_claims_are_counted_from_verifier_results():
     from harness.runner import _claims
     assert _claims([{"claim": "a", "ok": True}, {"claim": "b", "ok": False}, {"claim": "c", "infra_error": "x"}]) == (1, 3)
     assert _claims([]) == (0, 0)
+
+
+# --- reading tasks overlap so a slow model still fits the budget; writing tasks run alone, afterwards
+def many_tasks():
+    reads = [{"id": f"read{i}", "goal": "Which checklists are overdue?", "allow": [], "mode": "dry_run"} for i in range(6)]
+    writes = [{"id": f"write{i}", "goal": "Start the audit", "allow": ["start_monthly_safety_audit"], "mode": "live"}
+              for i in range(2)]
+    return [writes[0], *reads[:3], writes[1], *reads[3:]]
+
+
+async def test_read_only_tasks_overlap_and_write_tasks_run_one_at_a_time_after_them(tmp_path):
+    import asyncio
+    live, peak, order = {"n": 0}, {"reads": 0, "writes": 0}, []
+
+    async def timed(task, args, run_dir):
+        kind = "writes" if task["allow"] else "reads"
+        live["n"] += 1
+        peak[kind] = max(peak[kind], live["n"])
+        order.append(task["id"])
+        await asyncio.sleep(0.02)
+        live["n"] -= 1
+        return row(task["id"])
+
+    tasks = many_tasks()
+    payload = await run_official(tasks, instance="suryodaya", armed=True, budget_seconds=60,
+                                 out_path=tmp_path / "r.json", runner_args=type("A", (), {"live": True})(), run_task=timed)
+    assert peak["reads"] > 1 and peak["writes"] == 1
+    assert [t["id"] for t in order and payload["tasks"]] == [f"suryodaya:{t['id']}" for t in tasks]  # file order kept
+    assert order.index("write0") > max(order.index(f"read{i}") for i in range(6))
+    assert all(t["passed"] for t in payload["tasks"])
+
+
+async def test_a_crash_in_one_overlapping_task_costs_only_that_task(tmp_path):
+    async def flaky(task, args, run_dir):
+        if task["id"] == "read2":
+            raise RuntimeError("boom")
+        return row(task["id"])
+
+    payload = await run_official(many_tasks(), instance="suryodaya", armed=True, budget_seconds=60,
+                                 out_path=tmp_path / "r.json", runner_args=type("A", (), {"live": True})(), run_task=flaky)
+    assert [t["passed"] for t in payload["tasks"]].count(False) == 1
