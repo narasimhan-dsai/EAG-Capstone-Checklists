@@ -284,9 +284,12 @@ async def main_official(args: argparse.Namespace) -> int:
     runner_args = argparse.Namespace(live=armed, min_interval=0.0, force_rerun=False)
     try:
         tasks = load_tasks(str(EVALS / "tasks" / "official.jsonl"))
+        if args.only:
+            tasks = [t for t in tasks if t["id"] in set(args.only.split(","))]
         payload = await official.run_official(
             tasks, instance=instance, armed=armed, budget_seconds=args.budget_minutes * 60, out_path=args.out,
-            runner_args=runner_args, run_task=run_task)
+            runner_args=runner_args, run_task=run_task,
+            parallel=args.parallel)
     except Exception as problem:  # never leave the platform without a results file
         payload = official.build_results(instance, [{
             "id": f"{instance}:harness", "title": "The harness started", "passed": False, "score": 0.0,
@@ -305,6 +308,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry", action="store_true", help="with --official: skip tasks that change data")
     parser.add_argument("--out", default="results.json", help="with --official: the results file")
     parser.add_argument("--budget-minutes", type=float, default=16.0, help="with --official: stop starting tasks after this")
+    parser.add_argument("--parallel", type=int, default=6, help="with --official: read-only tasks run at once")
+    parser.add_argument("--only", help="with --official: comma-separated task ids to run")
     parser.add_argument("--tasks", default=str(EVALS / "tasks" / "scaffold.jsonl"), help="glob of task files")
     parser.add_argument("--family", choices=sorted(FAMILIES))
     parser.add_argument("--task-id")

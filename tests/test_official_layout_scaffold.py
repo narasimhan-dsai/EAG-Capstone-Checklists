@@ -56,3 +56,10 @@ def test_a_plain_local_run_uses_only_the_safe_scaffold_tasks_and_never_the_offic
     assert Path(args.tasks).name == "scaffold.jsonl"
     official = build_parser().parse_args(["--official", "--dry"])
     assert official.official is True and official.dry is True
+
+
+def test_a_local_run_can_slow_down_and_pick_tasks():
+    from harness.runner import build_parser
+    args = build_parser().parse_args(["--official", "--parallel", "1", "--only", "overdue,completion"])
+    assert args.parallel == 1 and args.only == "overdue,completion"
+    assert build_parser().parse_args(["--official"]).parallel == 6

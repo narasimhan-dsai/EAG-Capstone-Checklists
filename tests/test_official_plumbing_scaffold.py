@@ -107,3 +107,66 @@ async def test_a_refused_seat_token_says_so_instead_of_trying_to_log_in(monkeypa
     with pytest.raises(AgentSwitchError) as caught:
         await client_for(handler).call_tool("X.get", {"id": "1"}, jurisdiction="IN")
     assert "seat token was refused" in str(caught.value) and "/api/auth/login" not in paths
+
+
+# --- the model call keeps its own retries, and gives a reasoning model more room when it runs out
+class ScriptedCompletions:
+    def __init__(self, *steps):
+        self.steps, self.calls = list(steps), []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        step = self.steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        text, finish = step
+        return SimpleNamespace(model="m", usage=None,
+                               choices=[SimpleNamespace(message=SimpleNamespace(content=text), finish_reason=finish)])
+
+
+def scripted(*steps, **kwargs):
+    completions = ScriptedCompletions(*steps)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions), close=lambda: None)
+    return OpenAIClient(client=client, model="m", base_delay=0, **kwargs), completions
+
+
+async def test_an_empty_reply_that_ran_out_of_room_is_asked_again_with_twice_the_budget():
+    llm, completions = scripted(("", "length"), ("", "length"), ("the answer", "stop"))
+    out = await llm.complete("q", "s")
+    assert out["text"] == "the answer" and out["finish_reason"] == "stop"
+    assert [c["max_tokens"] for c in completions.calls] == [4096, 8192, 16384]
+
+
+async def test_the_budget_never_grows_past_the_cap_and_an_empty_reply_is_returned_not_raised():
+    llm, completions = scripted(*[("", "length")] * 4)
+    out = await llm.complete("q", "s")
+    assert out["text"] == "" and out["finish_reason"] == "length"
+    assert max(c["max_tokens"] for c in completions.calls) == 16384
+
+
+async def test_an_empty_reply_that_was_not_cut_short_is_returned_as_it_is():
+    llm, completions = scripted(("", "stop"))
+    assert (await llm.complete("q", "s"))["text"] == "" and len(completions.calls) == 1
+
+
+def status_error(code):
+    from openai import APIStatusError
+    response = httpx.Response(code, request=httpx.Request("POST", "http://m.invalid/v1"))
+    return APIStatusError(f"status {code}", response=response, body=None)
+
+
+async def test_a_busy_server_is_retried_and_a_rejected_request_is_not():
+    llm, completions = scripted(status_error(503), status_error(429), ("ok", "stop"))
+    assert (await llm.complete("q", "s"))["text"] == "ok" and len(completions.calls) == 3
+    llm, completions = scripted(status_error(400))
+    with pytest.raises(RuntimeError, match="model endpoint returned 400"):
+        await llm.complete("q", "s")
+    assert len(completions.calls) == 1
+
+
+async def test_a_server_that_keeps_failing_ends_in_an_error_scored_as_infrastructure():
+    from harness.scoring import _INFRA
+    llm, _ = scripted(*[status_error(503)] * 4)
+    with pytest.raises(RuntimeError) as failure:
+        await llm.complete("q", "s")
+    assert _INFRA.search(str(failure.value))
